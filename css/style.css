@@ -428,18 +428,17 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
 }
 #reader-content figure.fig img { cursor: zoom-in; }
 
-/* 放大檢視 */
+/* 放大檢視：位置與縮放由 imgzoom.js 用 transform 控制，CSS 只負責容器 */
 .zoom-overlay {
   position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.86);
-  overflow: auto; -webkit-overflow-scrolling: touch;
-  padding: calc(12px + var(--safe-top)) 12px calc(12px + var(--safe-bottom));
+  overflow: hidden; touch-action: none; overscroll-behavior: contain;
 }
-/* 靠左起始：置中會把表格左邊那欄切掉，要先看到列標題才有意義 */
-.zoom-overlay .zoom-inner { min-height: 100%; display: flex; align-items: center; justify-content: flex-start; }
-/* flex-shrink: 0 不可省，否則圖會被壓回容器寬度，等於沒放大 */
+/* transform-origin 必須是左上角，否則 imgzoom 的定點縮放算式會對不上 */
 .zoom-overlay img {
-  max-width: none; width: auto; min-width: 100%; flex-shrink: 0;
-  background: #fff; border-radius: var(--r-sm);
+  position: absolute; top: 0; left: 0;
+  transform-origin: 0 0; will-change: transform;
+  max-width: none; width: auto; background: #fff;
+  -webkit-user-select: none; user-select: none; -webkit-user-drag: none;
 }
 .zoom-close {
   position: fixed; top: calc(10px + var(--safe-top)); right: 12px;

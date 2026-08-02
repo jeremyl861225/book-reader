@@ -3,7 +3,7 @@
 // activate 只能刪自己的，否則會把其他 App 的離線快取一起清掉。
 // VERSION 要跟 main.js 的 APP_VERSION 一起改，否則手機會一直吃到舊的 JS。
 const PREFIX = 'book-reader-';
-const VERSION = 'v2.5.0';
+const VERSION = 'v2.6.0';
 const CORE_CACHE = `${PREFIX}core-${VERSION}`;
 const RUNTIME_CACHE = `${PREFIX}runtime`;
 
@@ -14,6 +14,7 @@ const CORE_ASSETS = [
   'js/main.js',
   'js/db.js',
   'js/reader.js',
+  'js/imgzoom.js',
   'js/pdf-import.js',
   'vendor/pdfjs/pdf.min.mjs',
   'vendor/pdfjs/pdf.worker.min.mjs',

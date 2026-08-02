@@ -49,7 +49,25 @@ python3 tools/make_book.py packs/ "書名" out/        # ② 內容包 → 書�
 **已存在的檔案會跳過**，所以中斷後重跑會從上次的地方接續。
 要重轉某幾章就先把那幾個 `.json` 刪掉。
 
-參數：`--max-width=1200`（圖片寬度上限）、`--quality=78`（JPEG 品質）。
+參數：`--max-width=1200`（圖片寬度上限）、`--quality=78`（壓縮品質）、
+`--format=webp`（改用 WebP，同樣大小可以多給約四分之一的解析度，需要 Pillow）。
+圖多的書（手術圖譜這種一頁排六到十六張分圖的）建議 `--format=webp --max-width=1300`。
+
+### 抽出來的字比畫面上少（`de ect`、`In d Ic at Io n s`）
+
+`text_repair.py` 專門處理這件事，見 skill 的 layout-traps 第 13–15 條。
+偵測方式：純文字頁卻有上百個字級大小的向量物件、或空白寬度不是每個都一樣。
+
+要修的書需要一份字形對照表：
+
+```bash
+python3 tools/build_glyph_table.py "<書的資料夾>" <書名代號>   # ① 分群＋猜測＋對照圖
+#   對著 <書名代號>.sheet.png 核對 <書名代號>.labels.txt（連字一定要自己看）
+python3 tools/build_glyph_table.py "<書的資料夾>" <書名代號> --labels=<書名代號>.labels.txt
+```
+
+表存在 `tools/glyphtables/`，`convert.py` 會自動比對命中率挑對的那份用，
+沒命中就完全不啟用，其他書不受影響。
 
 ### 斷段邏輯（改壞了整本書都會難讀，動之前先讀這段）
 

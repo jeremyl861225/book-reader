@@ -3,7 +3,7 @@
 
 用法：
     python3 convert.py <輸入> <輸出資料夾> [--max-width=1200] [--quality=78]
-                       [--zoom=2.0] [--no-regions]
+                       [--zoom=2.0] [--no-regions] [--format=webp]
 
 <輸入> 可以是：
 - 整本書的根資料夾（含「01 - SECTION I - ...」等 Section 子資料夾）
@@ -26,6 +26,9 @@
   （臨床表格配錯欄位比沒有還糟），所以同樣整塊算圖，另外保留純文字供搜尋。
   只有掛在「TABLE n.m」標題底下的小字叢集才算表格，避免把參考文獻那種
   小字清單也變成圖片。
+- **抽不出來的字**：有些書的字形被轉成向量外框、或字距被撐開，抽出來會缺字
+  （`defect` → `de ect`、`INDICATIONS` → `In d Ic at Io n s`）。
+  見 `text_repair.py`；那些外框路徑同時要排除在插圖叢集之外。
 """
 import base64
 import json
@@ -35,6 +38,8 @@ from collections import Counter
 from pathlib import Path
 
 import fitz  # PyMuPDF
+
+import text_repair
 
 MIN_IMG_PX = 60
 
@@ -317,10 +322,16 @@ def covers(outer, inner, frac=0.6):
     return hit.is_valid and not hit.is_empty and hit.get_area() > r.get_area() * frac
 
 
+def span_text(s):
+    """span 的文字。需要修字的書會改用 rawdict 抽版面，那邊的 span 只有 chars。"""
+    t = s.get('text')
+    return t if t is not None else ''.join(c['c'] for c in s.get('chars', ()))
+
+
 def line_size(line):
     tally = Counter()
     for s in line.get('spans', []):
-        n = len(s['text'].strip())
+        n = len(span_text(s).strip())
         if n:
             tally[round(s['size'], 1)] += n
     return tally.most_common(1)[0][0] if tally else None
@@ -338,11 +349,11 @@ def is_citation_span(s):
     而且本書的參考文獻清單另外都在，拿掉不會少資訊。
     上標的單位符號（cm²、10⁶ 的次方）不是純數字逗號，不會被誤刪。
     """
-    return bool(s.get('flags', 0) & SUP) and bool(CITATION.match(s.get('text', '')))
+    return bool(s.get('flags', 0) & SUP) and bool(CITATION.match(span_text(s)))
 
 
 def line_text(line):
-    t = ''.join(s['text'] for s in line.get('spans', []) if not is_citation_span(s))
+    t = ''.join(span_text(s) for s in line.get('spans', []) if not is_citation_span(s))
     # 軟連字號要在接行「之前」拿掉：留著的話行尾會變成 \xad，
     # 接行判斷看不到真正的最後一個字元，就會漏掉該補的空白
     # （「Advances and Training\xad」＋「Considerations」→ TrainingConsiderations）。
@@ -353,20 +364,24 @@ def line_text(line):
 
 def line_style(line):
     """回傳這一行的 (是否整行斜體, 是否整行粗體)，用來認子標與大綱層級。"""
-    spans = [s for s in line.get('spans', []) if s.get('text', '').strip()]
+    spans = [s for s in line.get('spans', []) if span_text(s).strip()]
     if not spans:
         return False, False
     return (all(s.get('flags', 0) & ITALIC for s in spans),
             all((s.get('flags', 0) & BOLD) or 'Bold' in s.get('font', '') for s in spans))
 
 
-def page_lines(page):
+def page_lines(page, repair=None):
     out = []
-    for block in page.get_text('dict')['blocks']:
+    for block in page.get_text('rawdict' if repair else 'dict')['blocks']:
         if block['type'] != 0:
             continue
         for line in block.get('lines', []):
-            t = line_text(line)
+            if repair:
+                t = repair.line(page, line, is_citation_span)
+                t = re.sub(r'[ \t]{2,}', ' ', t.replace('\t', ' ')).strip()
+            else:
+                t = line_text(line)
             if t:
                 italic, bold = line_style(line)
                 out.append({'text': t, 'bbox': line['bbox'], 'size': line_size(line),
@@ -374,14 +389,14 @@ def page_lines(page):
     return out
 
 
-def doc_profile(doc):
+def doc_profile(doc, repair=None):
     """整份文件的內文字級，以及跨頁重複的書眉字串。"""
     sizes = Counter()
     band_texts = Counter()
     n_pages = doc.page_count
     for page in doc:
         H = page.rect.height
-        for l in page_lines(page):
+        for l in page_lines(page, repair):
             for_size = len(l['text'].strip())
             if l['size'] is not None and for_size:
                 sizes[l['size']] += for_size
@@ -395,25 +410,48 @@ def doc_profile(doc):
     return body, running
 
 
-def is_running_head(line, H, running):
+def norm_key(t):
+    return re.sub(r'[^a-z0-9]', '', t.lower())
+
+
+def is_running_head(line, H, running, title_key=None, body=None):
     y0, y1 = line['bbox'][1], line['bbox'][3]
     if y1 > H * HEAD_BAND and y0 < H * FOOT_BAND:
         return False
     t = line['text'].strip()
     if PAGE_NUM.match(t) or CHAPTER_DECOR.match(t):
         return True
-    return re.sub(r'\d+', '', t).strip() in running
+    stripped = re.sub(r'\d+', '', t).strip()
+    # 跨頁重複偵測在短章上沒有樣本（兩頁的章只會出現一次），
+    # 那時改比章名——書眉本來就是章名加頁碼。字級條件不可省：
+    # 章名本身也在頁首帶內，少了它整章的標題會被當成書眉刪掉。
+    if title_key and norm_key(stripped) == title_key \
+            and (body is None or line['size'] is None or line['size'] <= body * 1.25):
+        return True
+    return stripped in running
 
 
 # ---------- 區域偵測 ----------
 
-def ink_regions(page):
-    """向量繪圖＋嵌入點陣圖的叢集＝插圖（或有框線的表格）。"""
+def ink_regions(page, glyphs=()):
+    """向量繪圖＋嵌入點陣圖的叢集＝插圖（或有框線的表格）。
+
+    `glyphs` 是被轉成向量外框的字（見 text_repair）。那些路徑要排除，
+    否則整頁幾百個外框字會叢集成一大塊，整頁內文變成一張圖。
+    """
+    W, H = page.rect.width, page.rect.height
     ink = []
     for d in page.get_drawings():
         r = fitz.Rect(d['rect']) & page.rect
-        if r.is_valid and not r.is_empty and (r.width >= 2 or r.height >= 2):
-            ink.append(r)
+        if not (r.is_valid and not r.is_empty and (r.width >= 2 or r.height >= 2)):
+            continue
+        if glyphs and text_repair.is_glyph_rect(d['rect'], glyphs):
+            continue
+        # 整頁底色不是墨跡。留著的話它會把全頁的東西叢集成一塊，
+        # 底下那個「太大就丟掉」的濾網再把整塊丟掉，真正的插圖就一起沒了。
+        if r.width > W * 0.95 and r.height > H * 0.9:
+            continue
+        ink.append(r)
     for b in page.get_text('dict')['blocks']:
         if b['type'] == 1:
             r = fitz.Rect(b['bbox']) & page.rect
@@ -488,9 +526,9 @@ def is_title_banner(page, region, body):
     return big >= 8 and small == 0
 
 
-def classify(page, region, lines):
+def classify(inner, region, lines):
     """看區域內、或緊鄰上方的標題，判斷這塊是表格還是插圖。"""
-    inner = page.get_text(clip=region).strip()
+    inner = inner.strip()
     if TABLE_CAP.match(inner):
         return 'table'
     if FIG_CAP.match(inner):
@@ -510,11 +548,31 @@ def classify(page, region, lines):
     return 'figure'
 
 
-def region_image(page, rect, max_width, quality, zoom):
+def encode_webp(pix, quality):
+    """WebP 在同樣檔案大小下能多給約四分之一的解析度，對插圖書差很多。
+
+    需要 Pillow；沒裝就退回 JPEG（結果只是大一點，不會壞）。
+    """
+    try:
+        import io
+        from PIL import Image
+    except ImportError:
+        return None
+    buf = io.BytesIO()
+    Image.frombytes('RGB', (pix.width, pix.height), pix.samples).save(
+        buf, 'WEBP', quality=quality, method=4)
+    return 'data:image/webp;base64,' + base64.b64encode(buf.getvalue()).decode()
+
+
+def region_image(page, rect, max_width, quality, zoom, fmt='jpeg'):
     z = min(zoom, max_width / max(rect.width, 1))
     pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(z, z), alpha=False)
     if pix.width < MIN_IMG_PX or pix.height < MIN_IMG_PX:
         return None
+    if fmt == 'webp':
+        url = encode_webp(pix, quality)
+        if url:
+            return url
     return 'data:image/jpeg;base64,' + base64.b64encode(pix.tobytes('jpg', jpg_quality=quality)).decode()
 
 
@@ -583,18 +641,30 @@ def order_items(items, page_width):
     return out
 
 
-def page_items(page, body, running, use_regions):
+def page_items(page, body, running, use_regions, repair=None, title_key=None):
     H, W = page.rect.height, page.rect.width
-    lines = page_lines(page)
+    lines = page_lines(page, repair)
+
+    def region_text(r, marks=True):
+        """區域裡的文字。要修字的書不能用 get_text——那會拿到缺字的版本，
+        表格標題認不出來（`TABLE 1` 抽出來是 `t a bl e 1`），搜尋也搜不到。
+
+        `marks=False` 給當下就要比對的判斷用（哨符要到整章讀完才解得開）。
+        """
+        if not repair:
+            return page.get_text(clip=r)
+        t = '\n'.join(l['text'] for l in lines if covers(r, l['bbox']))
+        return t if marks else text_repair.strip_marks(t)
 
     regions = []
     if use_regions:
-        ink = ink_regions(page)
+        ink = ink_regions(page, repair.glyphs(page) if repair else ())
         regions = ink + caption_anchored_tables(page, body, lines, ink)
         regions = merge_rects(regions, 0)
         regions = [r for r in regions
                    if not (r.width > W * 0.95 and r.height > H * 0.9)
-                   and not is_title_banner(page, r, body)]
+                   and not is_title_banner(page, r, body)
+                   and not CHAPTER_DECOR.match(region_text(r, False).strip())]
 
     outline, consumed = extract_outline(lines, body, W)
 
@@ -604,7 +674,7 @@ def page_items(page, body, running, use_regions):
     for l in lines:
         if id(l) in consumed:
             continue
-        if is_running_head(l, H, running):
+        if is_running_head(l, H, running, title_key, body):
             continue
         if any(covers(r, l['bbox']) for r in regions):    # 圖內標籤、表格內文
             continue
@@ -612,7 +682,8 @@ def page_items(page, body, running, use_regions):
                       'italic': l.get('italic'), 'bold': l.get('bold')})
     for r in regions:
         items.append({'kind': 'region', 'bbox': tuple(r), 'rect': r,
-                      'sub': classify(page, r, lines), 'text': clean(page.get_text(clip=r))})
+                      'sub': classify(region_text(r, False), r, lines),
+                      'text': clean(region_text(r))})
     return order_items(items, W)
 
 
@@ -695,9 +766,12 @@ def build_outline(entries, page_width):
     return [{'lv': i['lv'], 't': clean(i['t'])} for i in items if clean(i['t'])]
 
 
-def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
+def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True,
+                fmt='jpeg', title=None, vocab=None):
     doc = fitz.open(path)
-    body, running = doc_profile(doc)
+    repair = text_repair.Repair(doc) or None
+    title_key = norm_key(title) if title else None
+    body, running = doc_profile(doc, repair)
     paras = []
     cur, cur_size = '', None
     pending = []
@@ -724,9 +798,9 @@ def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
         pending.clear()
 
     for page in doc:
-        for it in page_items(page, body, running, use_regions):
+        for it in page_items(page, body, running, use_regions, repair, title_key):
             if it['kind'] == 'region':
-                url = region_image(page, it['rect'], max_width, quality, zoom)
+                url = region_image(page, it['rect'], max_width, quality, zoom, fmt)
                 if not url:
                     continue
                 obj = {'img': url, 'kind': it['sub']}
@@ -766,7 +840,11 @@ def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
     flush_text()
     emit_pending()
     doc.close()
-    return resolve_hyphens(strip_chapter_decor(paras)), n_img, n_tab
+    # 哨符要先解開：章首裝飾字樣在解開前長得像 `Ch\x03a\x02pt\x03e\x02r`，比對不到
+    if repair:
+        paras = text_repair.resolve_marks(paras, vocab)
+    paras = strip_chapter_decor(paras)
+    return resolve_hyphens(paras), n_img, n_tab
 
 
 def strip_chapter_decor(paras):
@@ -798,7 +876,7 @@ def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
             sec = 0
             if '扉頁' in pdf.stem:
                 title = '篇章總覽'
-    paras, n_img, n_tab = convert_pdf(pdf, **opts)
+    paras, n_img, n_tab = convert_pdf(pdf, title=title, **opts)
     pack = {'app': 'book-reader-pack',
             'sections': [{'chapter': ch, 'chapterTitle': chapter_title,
                           'section': sec, 'title': title, 'paras': paras}]}
@@ -806,6 +884,32 @@ def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
     n_text = sum(1 for p in paras if isinstance(p, str))
     print(f'{pdf.name} -> 章={ch} 節={sec}  段落={n_text} 圖={n_img} 表={n_tab}  '
           f'{out.stat().st_size/1024:.0f}KB', flush=True)
+
+
+def book_vocab(pdfs, cache):
+    """全書的詞頻表，給 text_repair 補掉字用。
+
+    掉字要靠「補起來是不是認得的字」來決定，單章的詞彙常常不夠——
+    `f uid` 只有在別章出現過 `fluid` 才補得回來。這一趟只抽文字不算圖，
+    比整本轉檔快得多，而且會存起來，重跑不必再算。
+    """
+    if cache.exists():
+        return Counter(json.loads(cache.read_text(encoding='utf-8')))
+    tally = Counter()
+    for i, pdf in enumerate(pdfs):
+        doc = fitz.open(pdf)
+        repair = text_repair.Repair(doc) or None
+        if repair is None:
+            doc.close()
+            if i == 0:
+                return None             # 這本書不需要修字
+            continue
+        for page in doc:
+            for l in page_lines(page, repair):
+                tally.update(w.lower() for w in re.findall(r'[A-Za-z]{2,}', l['text']))
+        doc.close()
+    cache.write_text(json.dumps(tally, ensure_ascii=False), encoding='utf-8')
+    return tally
 
 
 def main():
@@ -819,12 +923,20 @@ def main():
     opts = {'max_width': int(flags.get('max-width', 1200)),
             'quality': int(flags.get('quality', 78)),
             'zoom': float(flags.get('zoom', 2.0)),
-            'use_regions': not flags.get('no-regions', False)}
+            'use_regions': not flags.get('no-regions', False),
+            'fmt': flags.get('format', 'jpeg')}
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if src.is_file():
         convert_one(src, out_dir, None, None, opts, skip_existing=False)
         return
+
+    all_pdfs = sorted(src.glob('*.pdf')) + sorted(
+        p for d in sorted(x for x in src.iterdir() if x.is_dir()) for p in sorted(d.glob('*.pdf')))
+    vocab = book_vocab(all_pdfs, out_dir / '.vocab.json')
+    if vocab:
+        print(f'全書詞彙 {len(vocab)} 個', flush=True)
+        opts['vocab'] = vocab
 
     for pdf in sorted(src.glob('*.pdf')):
         ch, _, _ = parse_filename(pdf.name)

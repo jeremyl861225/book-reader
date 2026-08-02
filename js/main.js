@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.5.0';
+const APP_VERSION = 'v2.6.0';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';

@@ -1,5 +1,6 @@
 // 閱讀頁：內文渲染、螢光筆、筆記
 import { db, uid } from './db.js';
+import { openZoom } from './imgzoom.js';
 
 const $ = (s) => document.querySelector(s);
 const readerEl = $('#reader');
@@ -306,28 +307,6 @@ function renderPara(p, text, paraIdx) {
       p.appendChild(node);
     }
   }
-}
-
-/* 放大檢視：整張圖可捲動，點任意處或按 Esc 關閉 */
-function openZoom(src, alt) {
-  const ov = document.createElement('div');
-  ov.className = 'zoom-overlay';
-  const inner = document.createElement('div');
-  inner.className = 'zoom-inner';
-  const big = document.createElement('img');
-  big.src = src;            // 圖說可能帶引號，一律走 DOM 設值不要拼 HTML
-  big.alt = alt;
-  inner.appendChild(big);
-  const x = document.createElement('button');
-  x.className = 'zoom-close';
-  x.setAttribute('aria-label', '關閉');
-  x.textContent = '✕';
-  ov.append(inner, x);
-  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  ov.addEventListener('click', close);
-  document.addEventListener('keydown', onKey);
-  document.body.appendChild(ov);
 }
 
 function rerenderParas(indices) {
