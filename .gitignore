@@ -1,3 +1,10 @@
 .DS_Store
 node_modules/
 *.log
+
+# 書的內容有版權，一律不進版控（這是公開 repo）
+packs/
+out/
+*.book.json
+*.pack.json
+book-reader-backup-*.json

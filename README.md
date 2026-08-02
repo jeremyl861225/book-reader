@@ -59,9 +59,15 @@
 要從書的 PDF 產生這個格式，用 `tools/convert.py` 轉成內容包，再用 `tools/make_book.py` 打包：
 
 ```bash
+pip install pymupdf
 python3 tools/convert.py "<書的資料夾>" packs/
 python3 tools/make_book.py packs/ "書名" out/
 ```
+
+資料夾命名規則、斷段與圖片處理的細節、品質抽查清單都在 **[tools/README.md](tools/README.md)**。
+
+> **書的內容不進版控。** 這個 repo 是公開的，`packs/` 與 `*.book.json` 只留在本機
+>（已列入 `.gitignore`），要跨裝置就自己用 AirDrop／雲端硬碟搬運。
 
 ## 技術
 
