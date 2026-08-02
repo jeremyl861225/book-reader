@@ -8,7 +8,7 @@ const toolbar = $('#hl-toolbar');
 const sheet = $('#hl-sheet');
 const sheetMask = $('#sheet-mask');
 
-let cur = { section: null, sections: [], highlights: [] };
+let cur = { section: null, sections: [], highlights: [], figs: new Map() };
 let pendingSel = null;    // 選取中準備新增的標記
 let editingGroup = null;  // sheet 正在編輯的 groupId
 let onCloseCb = null;
@@ -18,11 +18,14 @@ export function isReaderOpen() { return !readerEl.hidden; }
 export async function openReader(sectionId, opts = {}) {
   const section = await db.getSection(sectionId);
   if (!section) return;
-  // 上一節／下一節只在同一本書裡走
+  // 上一節／下一節只在同一本書裡走。這裡只要 id 順序，不必把整本書的內文載進來。
   const sections = await db.sectionsOf(section.bookId);
   cur.section = section;
-  cur.sections = sections;
+  // 只留 id：閱讀期間不必抱著整本書的內文不放
+  cur.sections = sections.map(s => ({ id: s.id }));
   cur.highlights = await db.highlightsFor(sectionId);
+  // 圖片只載目前這一節的
+  cur.figs = new Map((await db.figuresFor(sectionId)).map(f => [f.id, f.img]));
   onCloseCb = opts.onClose || null;
 
   $('#reader-chapter').textContent =
@@ -44,6 +47,8 @@ export async function openReader(sectionId, opts = {}) {
 export function closeReader() {
   hideToolbar(); closeSheet();
   readerEl.hidden = true;
+  contentEl.replaceChildren();   // 放掉 <img> 對圖檔的參照
+  cur.figs = new Map();
   if (onCloseCb) onCloseCb();
 }
 
@@ -138,17 +143,19 @@ function renderContent() {
       p.dataset.i = i;
       renderPara(p, item, i);
       frag.appendChild(p);
-    } else if (item && item.img) {
+    } else if (item && (item.figId || item.img)) {
+      const src = item.img || cur.figs.get(item.figId);
+      if (!src) return;
       const isTable = item.kind === 'table';
       const fig = document.createElement('figure');
       fig.className = 'fig' + (isTable ? ' table' : '');
       fig.dataset.i = i;
       const img = document.createElement('img');
-      img.src = item.img;
+      img.src = src;
       img.loading = 'lazy';
       img.alt = item.caption || (isTable ? '表格' : '圖片');
       // 表格與細節圖在手機上會縮得看不清，點一下放大來看
-      img.addEventListener('click', () => openZoom(item.img, img.alt));
+      img.addEventListener('click', () => openZoom(src, img.alt));
       fig.appendChild(img);
       if (item.caption) {
         const fc = document.createElement('figcaption');
@@ -214,8 +221,17 @@ function renderPara(p, text, paraIdx) {
 function openZoom(src, alt) {
   const ov = document.createElement('div');
   ov.className = 'zoom-overlay';
-  ov.innerHTML = `<div class="zoom-inner"><img src="${src}" alt="${alt}"></div>
-                  <button class="zoom-close" aria-label="關閉">✕</button>`;
+  const inner = document.createElement('div');
+  inner.className = 'zoom-inner';
+  const big = document.createElement('img');
+  big.src = src;            // 圖說可能帶引號，一律走 DOM 設值不要拼 HTML
+  big.alt = alt;
+  inner.appendChild(big);
+  const x = document.createElement('button');
+  x.className = 'zoom-close';
+  x.setAttribute('aria-label', '關閉');
+  x.textContent = '✕';
+  ov.append(inner, x);
   const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   ov.addEventListener('click', close);

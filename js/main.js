@@ -1,5 +1,5 @@
 // 主程式：書架、目錄、搜尋、筆記總覽、設定
-import { db, uid } from './db.js';
+import { db, uid, splitFigures } from './db.js';
 import { importFiles, importPacks, loadSample, resortSections } from './pdf-import.js';
 import { initReader, openReader, toast } from './reader.js';
 
@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.2.0';
+const APP_VERSION = 'v2.3.0';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -52,13 +52,15 @@ async function renderShelf() {
     return;
   }
 
-  const [allSections, allHls] = await Promise.all([db.allSections(), db.allHighlights()]);
-  const secOf = new Map();
-  for (const s of allSections) {
-    if (!secOf.has(s.bookId)) secOf.set(s.bookId, []);
-    secOf.get(s.bookId).push(s);
+  // 書架只需要「每本幾章、幾個標記」——一律走 count／getAllKeys，
+  // 絕不把 sections 整包載進來（那會連同圖片一起反序列化，手機會被記憶體壓死）。
+  const allHls = await db.allHighlights();
+  const secCount = new Map();
+  const bookOfSection = new Map();
+  for (const b of books) {
+    secCount.set(b.id, await db.countSectionsOf(b.id));
+    for (const sid of await db.sectionKeysOf(b.id)) bookOfSection.set(sid, b.id);
   }
-  const bookOfSection = new Map(allSections.map(s => [s.id, s.bookId]));
   const hlCount = new Map();
   for (const h of allHls) {
     const b = bookOfSection.get(h.sectionId);
@@ -70,7 +72,8 @@ async function renderShelf() {
   // 繼續閱讀
   try {
     const last = JSON.parse(localStorage.getItem('lastRead') || 'null');
-    const lastSec = last && allSections.find(s => s.id === last.sectionId);
+    const lastSec = last && bookOfSection.has(last.sectionId)
+      ? await db.getSection(last.sectionId) : null;
     if (lastSec) {
       const c = document.createElement('button');
       c.className = 'continue-card';
@@ -81,13 +84,13 @@ async function renderShelf() {
   } catch {}
 
   for (const b of books) {
-    const secs = secOf.get(b.id) || [];
+    const nSec = secCount.get(b.id) || 0;
     const n = hlCount.get(b.id) || 0;
     const btn = document.createElement('button');
     btn.className = 'book-item';
     btn.innerHTML =
       `<span class="bt">${esc(b.title)}</span>` +
-      `<span class="bm">${secs.length} 個章節${n ? `・${n} 個標記` : ''}</span>`;
+      `<span class="bm">${nSec} 個章節${n ? `・${n} 個標記` : ''}</span>`;
     btn.onclick = () => openBook(b.id);
     frag.appendChild(btn);
   }
@@ -348,10 +351,9 @@ async function renderBookList() {
   const wrap = $('#book-list');
   const books = await db.allBooks();
   if (!books.length) { wrap.innerHTML = '<p class="hint">還沒有任何書。</p>'; return; }
-  const all = await db.allSections();
   const frag = document.createDocumentFragment();
   for (const b of books) {
-    const n = all.filter(s => s.bookId === b.id).length;
+    const n = await db.countSectionsOf(b.id);   // 只數，不載內文
     const row = document.createElement('div');
     row.className = 'manage-item';
     row.innerHTML =
@@ -381,13 +383,32 @@ async function renderBookList() {
 }
 
 /* ----- 匯出一本書（內容＋螢光筆＋筆記） ----- */
-function download(obj, filename) {
-  const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+function downloadBlob(blob, filename) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function download(obj, filename) {
+  downloadBlob(new Blob([JSON.stringify(obj)], { type: 'application/json' }), filename);
+}
+
+// 圖片存在 figures store，匯出時再貼回 paras 裡，書籍檔格式保持不變。
+async function inlineSection(s) {
+  const figs = new Map((await db.figuresFor(s.id)).map(f => [f.id, f.img]));
+  if (!figs.size) return s;
+  return {
+    ...s,
+    paras: s.paras.map(p => {
+      if (p && typeof p === 'object' && p.figId) {
+        const { figId, ...rest } = p;
+        const img = figs.get(figId);
+        return img ? { ...rest, img } : rest;
+      }
+      return p;
+    }),
+  };
 }
 
 async function exportBook(book) {
@@ -395,40 +416,43 @@ async function exportBook(book) {
   prog.hidden = false;
   prog.textContent = '準備匯出…';
 
-  const sections = await db.sectionsOf(book.id);
-  if (!sections.length) { prog.textContent = '這本書沒有內容可匯出。'; return; }
-
-  const hlBySection = new Map();
-  for (const s of sections) {
-    const hs = await db.highlightsFor(s.id);
-    if (hs.length) hlBySection.set(s.id, hs);
-  }
-
-  // 依大小切份，避免單一檔案過大導致手機匯入時解析失敗
-  const parts = [];
-  let cur = [], curBytes = 0;
-  for (const s of sections) {
-    const bytes = JSON.stringify(s).length;
-    if (cur.length && curBytes + bytes > PART_BYTES) { parts.push(cur); cur = []; curBytes = 0; }
-    cur.push(s); curBytes += bytes;
-  }
-  if (cur.length) parts.push(cur);
+  // 只先取得順序，內文一章一章讀，記憶體峰值維持在單一份（約 20 MB）
+  const ids = (await db.sectionsOf(book.id)).map(s => s.id);
+  if (!ids.length) { prog.textContent = '這本書沒有內容可匯出。'; return; }
 
   const key = book.key || book.id;
   const safe = book.title.replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
-  for (let i = 0; i < parts.length; i++) {
-    prog.textContent = `匯出第 ${i + 1}/${parts.length} 份…`;
-    const secs = parts[i];
-    const hls = secs.flatMap(s => hlBySection.get(s.id) || []);
+  let cur = [], curHls = [], curBytes = 0, part = 0;
+
+  // 一份填滿就立刻存檔並清空。總份數要跑完才知道，所以檔名用 partN，
+  // 匯入端是依 book.key 分組的，不看份號也不看順序。
+  const flush = async () => {
+    if (!cur.length) return;
+    part++;
+    prog.textContent = `匯出第 ${part} 份…`;
     download({
       app: BOOK_FILE, version: 1, exportedAt: new Date().toISOString(),
       book: { key, title: book.title },
-      part: i + 1, parts: parts.length,
-      sections: secs, highlights: hls,
-    }, parts.length === 1 ? `${safe}.book.json` : `${safe}-${i + 1}of${parts.length}.book.json`);
-    await new Promise(r => setTimeout(r, 600)); // 讓瀏覽器逐份存檔
+      part, sections: cur, highlights: curHls,
+    }, `${safe}-part${part}.book.json`);
+    cur = []; curHls = []; curBytes = 0;
+    await new Promise(r => setTimeout(r, 600));   // 讓瀏覽器逐份存檔
+  };
+
+  for (let i = 0; i < ids.length; i++) {
+    if (!cur.length) prog.textContent = `讀取第 ${i + 1}/${ids.length} 章…`;
+    const raw = await db.getSection(ids[i]);
+    if (!raw) continue;
+    const s = await inlineSection(raw);
+    const bytes = JSON.stringify(s).length;
+    // 依大小切份，避免單一檔案過大導致手機匯入時解析失敗
+    if (cur.length && curBytes + bytes > PART_BYTES) await flush();
+    cur.push(s); curBytes += bytes;
+    curHls.push(...await db.highlightsFor(s.id));
   }
-  prog.textContent = `已匯出 ${parts.length} 個檔案，共 ${sections.length} 章。可用 AirDrop 或雲端硬碟傳到另一台裝置匯入。`;
+  await flush();
+
+  prog.textContent = `已匯出 ${part} 個檔案（part1～part${part}），共 ${ids.length} 章。匯入時請一次全選，缺一份就會少章節。`;
   toast('匯出完成');
 }
 
@@ -452,8 +476,14 @@ $('#book-input').addEventListener('change', async (e) => {
 });
 
 async function importBookFiles(files, onStatus) {
-  // 先全部讀進來，依 book.key 分組（多份檔案屬於同一本書）
-  const groups = new Map();
+  // 一個檔案讀完就寫進 DB 再放掉。若先把 13 份 20 MB 的檔案全 parse 起來，
+  // 光是圖片就會讓手機在開始寫入之前就被記憶體壓死。
+  let nBooks = 0, nSecs = 0, nHls = 0;
+  const bookOf = new Map();   // book.key → book（跨檔案沿用同一本）
+  const idMap = new Map();    // 原 sectionId → 新 sectionId（標記靠它對位）
+  const maxOrder = new Map();
+  const existing = await db.allBooks();
+
   for (let i = 0; i < files.length; i++) {
     onStatus?.(`讀取 ${i + 1}/${files.length}：${files[i].name}`);
     let d;
@@ -463,43 +493,43 @@ async function importBookFiles(files, onStatus) {
       throw new Error(`${files[i].name} 不是書籍檔（請改用「匯入章節」載入內容包）`);
     }
     const key = d.book?.key || d.book?.title || files[i].name;
-    if (!groups.has(key)) groups.set(key, { title: d.book?.title || '未命名的書', sections: [], highlights: [] });
-    const g = groups.get(key);
-    g.sections.push(...d.sections);
-    g.highlights.push(...(d.highlights || []));
-  }
 
-  let nBooks = 0, nSecs = 0, nHls = 0;
-  const existing = await db.allBooks();
-  for (const [key, g] of groups) {
     // 同一把 key 已存在就併進去，否則開新書
-    let book = existing.find(b => b.key && b.key === key);
+    let book = bookOf.get(key);
     if (!book) {
-      const id = await createBook(g.title, key);
-      book = await db.getBook(id);
-      nBooks++;
+      book = existing.find(b => b.key && b.key === key);
+      if (!book) {
+        const id = await createBook(d.book?.title || '未命名的書', key);
+        book = await db.getBook(id);
+        nBooks++;
+      }
+      bookOf.set(key, book);
+      maxOrder.set(key, (await db.sectionsOf(book.id)).reduce((m, s) => Math.max(m, s.order || 0), 0));
     }
-    let maxOrder = (await db.sectionsOf(book.id)).reduce((m, s) => Math.max(m, s.order || 0), 0);
-    const idMap = new Map();
-    let done = 0;
-    for (const s of g.sections) {
+
+    let order = maxOrder.get(key);
+    for (let j = 0; j < d.sections.length; j++) {
+      const s = d.sections[j];
       if (!Array.isArray(s.paras)) continue;
       const newId = uid();
       idMap.set(s.id, newId);
-      await db.putSection({
-        ...s, id: newId, bookId: book.id, order: ++maxOrder, addedAt: Date.now(),
-      });
+      await db.putSection({ ...s, id: newId, bookId: book.id, order: ++order, addedAt: Date.now() });
+      d.sections[j] = null;   // 寫完就放掉這一章的圖片
       nSecs++;
-      if (++done % 20 === 0) onStatus?.(`寫入《${book.title}》${done}/${g.sections.length} 章…`);
+      if (nSecs % 10 === 0) onStatus?.(`寫入《${book.title}》第 ${nSecs} 章…`);
     }
-    for (const h of g.highlights) {
+    maxOrder.set(key, order);
+
+    for (const h of (d.highlights || [])) {
       const sid = idMap.get(h.sectionId);
       if (!sid) continue;  // 對應不到章節的標記直接略過
       await db.putHighlight({ ...h, id: uid(), sectionId: sid });
       nHls++;
     }
-    await resortSections(book.id);
+    d = null;
   }
+
+  for (const book of bookOf.values()) await resortSections(book.id);
   return { books: nBooks, sections: nSecs, highlights: nHls };
 }
 
@@ -533,12 +563,38 @@ $('#theme-sel').addEventListener('change', (e) => {
 
 /* ---------- 整機備份 ---------- */
 $('#btn-export').addEventListener('click', async () => {
-  download({
-    app: 'book-reader', version: 2, exportedAt: new Date().toISOString(),
-    books: await db.allBooks(),
-    sections: await db.allSections(),
-    highlights: await db.allHighlights(),
-  }, `book-reader-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  const btn = $('#btn-export');
+  const est = await navigator.storage?.estimate?.().catch(() => null);
+  const mb = est?.usage ? Math.round(est.usage / 1e6) : 0;
+  if (mb > 50 && !confirm(
+    `目前資料約 ${mb} MB。整機備份是單一檔案，還原時手機得一次解析整份，這個大小很容易失敗。\n` +
+    `建議改用「書籍管理 → 匯出」，它會自動分份，內容、螢光筆與筆記一樣都在。\n\n仍要繼續嗎？`)) return;
+  btn.disabled = true;
+  try {
+    // 逐章串進 Blob：不把整份備份兜成一條字串，記憶體峰值維持在單一章節
+    const chunks = [
+      '{"app":"book-reader","version":2,"exportedAt":' + JSON.stringify(new Date().toISOString()),
+      ',"books":' + JSON.stringify(await db.allBooks()),
+      ',"highlights":' + JSON.stringify(await db.allHighlights()),
+      ',"sections":[',
+    ];
+    const ids = (await db.allSections()).map(s => s.id);
+    let first = true;
+    for (const id of ids) {
+      const raw = await db.getSection(id);
+      if (!raw) continue;
+      chunks.push((first ? '' : ',') + JSON.stringify(await inlineSection(raw)));
+      first = false;
+    }
+    chunks.push(']}');
+    downloadBlob(new Blob(chunks, { type: 'application/json' }),
+      `book-reader-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    toast('備份完成');
+  } catch (err) {
+    alert(`匯出失敗：${err.message || err}`);
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 $('#btn-restore').addEventListener('click', () => $('#restore-input').click());
@@ -580,9 +636,30 @@ $('#btn-wipe').addEventListener('click', async () => {
 });
 
 /* ---------- 啟動 ---------- */
+// 舊資料的圖片還混在章節裡時，先搬到獨立的 figures store 再開始畫面。
+// 一章一個交易，中途關掉 App 也不會壞資料，下次接著跑。
+async function boot() {
+  let overlay = null;
+  try {
+    await splitFigures((done, total) => {
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'boot-overlay';
+        overlay.innerHTML = '<div><b>正在整理書籍內容…</b><p class="hint">只有這一次，請不要關閉。</p><p class="hint" id="boot-n"></p></div>';
+        document.body.appendChild(overlay);
+      }
+      $('#boot-n').textContent = `${done} / ${total}`;
+    });
+  } catch (err) {
+    console.error('figure split failed', err);
+  }
+  overlay?.remove();
+  renderShelf();
+}
+
 applyPrefs();
 initReader();
-renderShelf();
+boot();
 $('#app-version').textContent = `Book reader ${APP_VERSION}・內容僅儲存於此裝置`;
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

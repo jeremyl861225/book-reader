@@ -107,6 +107,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: none; background: none; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
+/* 一次性資料搬移的擋板 */
+#boot-overlay {
+  position: fixed; inset: 0; z-index: 95;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); text-align: center; padding: 24px;
+}
+#boot-overlay .hint { margin-top: 8px; }
+
 /* ---------- 版面 ---------- */
 #views { height: 100dvh; }
 .view { display: none; height: 100%; flex-direction: column; }
