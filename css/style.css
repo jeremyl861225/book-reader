@@ -361,10 +361,18 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
   margin: 0 0 2em; padding-bottom: 1.1em; border-bottom: 1px solid var(--line);
 }
 /* 圖說：跟在圖後面，字小一級、不與正文混淆 */
-#reader-content p.caption {
-  font-size: .82em; line-height: 1.6; color: var(--muted);
-  text-align: left; margin: -.6em 0 1.6em;
+/* 圖說與圖表附註：這些是「圖表的附屬文字」不是正文。
+   只靠字級小一點不夠——手機上讀起來還是像內文，所以加一條左緣線把它們
+   從正文的文字流裡拉出來，一眼就分得出哪些是圖表的說明。 */
+#reader-content p.caption, #reader-content p.note {
+  font-size: .76em; line-height: 1.62; color: var(--muted);
+  text-align: left; padding-left: .9em;
+  border-left: 2px solid var(--line);
 }
+#reader-content p.caption { margin: 0 0 .8em; }       /* 圖說在圖上方，貼著圖 */
+#reader-content p.note { margin: -.5em 0 .7em; }      /* 附註在圖下方，貼著圖 */
+#reader-content p.note + p.note { margin-top: -.35em; }
+#reader-content figure.fig + p.note { margin-top: -.9em; }
 /* 內文小標：h1＝原文全大寫的大節，h2＝標題式大小寫的小節 */
 #reader-content p.heading { text-align: left; }
 #reader-content p.heading.h1 {

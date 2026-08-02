@@ -104,6 +104,23 @@ function restoreMark(mark) {
 
 // 圖說：「Figure 3.1.」「Table 2」「圖 5-1」開頭
 const CAPTION_RE = /^(Figure|Fig\.|Table|Chart|Box|圖|表)\s*[\dA-Z]+[.\-–:]/i;
+
+// 圖表附註：縮寫對照、出處、標記註解。原書把這些排成小字，但內容包只有純文字，
+// 不判出來就會和內文一樣大——表格底下突然冒出一段「CAS, Carotid artery stenting;
+// CEA, carotid endarterectomy.」讀起來像正文，很干擾。
+const NOTE_RES = [
+  /^[*†‡§¶#]/,                                  // ＊、†、‡ 起頭的註腳
+  /^[a-z](?=[A-Z])/,                            // 上標字母黏在後面（「aAdult doses…」）
+  // 縮寫對照（「FFP, Fresh frozen plasma; …」）。逗號後要求大寫是關鍵：
+  // 少了它，內文的「individual, allowing learners…」「Thus, the patient…」也會中
+  /^[A-Za-z0-9/µ\-]{1,12},\s+[A-Z]/,
+  // 出處註。不可加忽略大小寫——句中被切開的片段（「from spine avulsion
+  // fractures, …」）會誤中；真正的出處註一定是句首大寫
+  /^(Adapted|Modified|Reprinted|Reproduced|Data|From|Courtesy|Source)\b/,
+  /^Notes?\b/,
+  /^\(?Continued\)?\.?$/i,
+];
+const isNote = (t) => NOTE_RES.some(re => re.test(t));
 // 句尾標點：有的話就不是標題
 const ENDS_SENTENCE = /[.!?;:,。！？；：，、]["'”』)）]?$/;
 // 標題大小寫時可以維持小寫的虛詞
@@ -182,10 +199,21 @@ function paraClass(text, i) {
 
 function renderContent() {
   const frag = document.createDocumentFragment();
+  // 圖表底下的附註要緊跟著圖表才算數，所以用一個額度往下帶。
+  // 給 3 段是因為一個表格底下最多就是「標記註解＋縮寫對照＋出處」三段；
+  // 不設上限的話，內文裡一句「From a practical standpoint…」也會被當成附註。
+  let noteQuota = 0;
   cur.section.paras.forEach((item, i) => {
     if (typeof item === 'string') {
       const p = document.createElement('p');
-      p.className = paraClass(item, i);
+      let cls = paraClass(item, i);
+      if (cls === 'para' && noteQuota > 0 && isNote(item)) {
+        cls = 'para note';
+        noteQuota--;
+      } else if (cls !== 'para caption') {
+        noteQuota = 0;
+      }
+      p.className = cls;
       p.dataset.i = i;
       renderPara(p, item, i);
       frag.appendChild(p);
@@ -216,6 +244,7 @@ function renderContent() {
       img.src = src;
       img.loading = 'lazy';
       img.alt = item.caption || (isTable ? '表格' : '圖片');
+      noteQuota = 3;      // 接下來幾段若像附註就縮小，見上面的說明
       // 表格與細節圖在手機上會縮得看不清，點一下放大來看
       img.addEventListener('click', () => openZoom(src, img.alt));
       fig.appendChild(img);

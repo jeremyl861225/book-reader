@@ -3,7 +3,7 @@
 // activate 只能刪自己的，否則會把其他 App 的離線快取一起清掉。
 // VERSION 要跟 main.js 的 APP_VERSION 一起改，否則手機會一直吃到舊的 JS。
 const PREFIX = 'book-reader-';
-const VERSION = 'v2.4.1';
+const VERSION = 'v2.5.0';
 const CORE_CACHE = `${PREFIX}core-${VERSION}`;
 const RUNTIME_CACHE = `${PREFIX}runtime`;
 

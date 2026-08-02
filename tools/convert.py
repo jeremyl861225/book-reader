@@ -53,7 +53,10 @@ CN_NUM = {'零': 0, '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5,
 
 TABLE_CAP = re.compile(r'^\s*(TABLE|表)\s*[\d.]+', re.I)
 FIG_CAP = re.compile(r'^\s*(FIGURE|FIG\.|圖)\s*[\d.]+', re.I)
-PAGE_NUM = re.compile(r'^\s*[ivxlcdm\d]{1,6}\s*$', re.I)
+# 頁碼：阿拉伯數字、羅馬數字，以及電子版章節的「e2」「e77」。
+# 少了 e 開頭那種，它們不但會多出一段，還會把跨頁的句子從中切成兩半
+# （實測 Sabiston 有 226 段，其中 127 段切斷句子）。
+PAGE_NUM = re.compile(r'^\s*(?:[eE]\d{1,4}|[ivxlcdm]{1,7}|\d{1,4})\s*$', re.I)
 # 章首的裝飾字樣：「C H A P T E R」「26 C H A P T E R」
 CHAPTER_DECOR = re.compile(r'^\s*\d*\s*C\s*H\s*A\s*P\s*T\s*E\s*R\s*\d*\s*$', re.I)
 
