@@ -1,6 +1,6 @@
 {
-  "name": "隨身書",
-  "short_name": "隨身書",
+  "name": "Book reader",
+  "short_name": "Book reader",
   "description": "行動書架：多書收藏、章節閱讀、螢光筆、筆記、全文搜尋",
   "lang": "zh-Hant",
   "start_url": "./",

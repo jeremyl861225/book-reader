@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把章節 PDF 轉成隨身書內容包（.json，含文字段落與圖片）。
+"""把章節 PDF 轉成 Book reader 內容包（.json，含文字段落與圖片）。
 
 用法：
     python3 convert.py <輸入> <輸出資料夾> [--max-width=1200] [--quality=78]

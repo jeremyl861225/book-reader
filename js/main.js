@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.0.0';
+const APP_VERSION = 'v2.0.1';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -571,7 +571,7 @@ $('#btn-wipe').addEventListener('click', async () => {
 applyPrefs();
 initReader();
 renderShelf();
-$('#app-version').textContent = `隨身書 ${APP_VERSION}・內容僅儲存於此裝置`;
+$('#app-version').textContent = `Book reader ${APP_VERSION}・內容僅儲存於此裝置`;
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});

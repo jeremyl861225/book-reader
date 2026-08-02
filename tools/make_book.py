@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 convert.py 產生的內容包打包成「書籍檔」，供隨身書 app 直接匯入。
+"""把 convert.py 產生的內容包打包成「書籍檔」，供 Book reader app 直接匯入。
 
 用法：
     python3 make_book.py <packs 資料夾> "<書名>" <輸出資料夾> [--part-mb=20] [--key=自訂識別碼]
