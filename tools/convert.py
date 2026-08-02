@@ -11,7 +11,8 @@
 - 單一 Section 資料夾或單一 PDF
 
 也支援「第1章第2節 標題.pdf」「1-2 標題.pdf」等中文命名。
-每個 PDF 產生一個同名 .json 內容包，可用 app 的「匯入章節」或「書庫同步」載入。
+每個 PDF 產生一個同名 .json 內容包。可用 app 的「匯入章節」直接載入，
+或再用 make_book.py 打包成書籍檔（一次匯入整本，並可攜帶螢光筆與筆記）。
 """
 import base64
 import json
