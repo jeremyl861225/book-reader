@@ -300,34 +300,85 @@ async function createBook(title, key) {
   return id;
 }
 
-/* ----- 匯入章節（PDF / 內容包） ----- */
-$('#btn-import').addEventListener('click', async () => {
-  const bookId = await resolveTargetBook();
-  if (!bookId) return;
-  $('#file-input').dataset.book = bookId;
-  $('#file-input').click();
-});
+/* ----- 匯入（書籍檔 / 章節 PDF / 內容包，同一個入口） -----
+   只留一顆按鈕，類型靠檔案內容判讀：書籍檔自己帶書名與螢光筆，依 book.key 歸位；
+   PDF 與內容包沒有書的資訊，收進上面選的那本書。 */
+
+// 書籍檔開頭一定是 {"app":"book-reader-book",…（JSON.stringify 依插入順序輸出），
+// 只讀前 300 個位元組就能分辨，不必先把 20 MB 整個 parse 一遍。
+async function sniffKind(f) {
+  if (/\.pdf$/i.test(f.name)) return 'pdf';
+  try {
+    const head = await f.slice(0, 300).text();
+    if (head.includes('"book-reader-book"')) return 'book';
+    if (head.includes('"app"') && head.includes('"book-reader"')) return 'backup';
+  } catch {}
+  return 'pack';
+}
+
+$('#btn-import').addEventListener('click', () => $('#file-input').click());
+
 $('#file-input').addEventListener('change', async (e) => {
   const files = [...(e.target.files || [])];
-  const bookId = e.target.dataset.book;
-  if (!files.length || !bookId) return;
+  e.target.value = '';
+  if (!files.length) return;
   const prog = $('#import-progress');
   prog.hidden = false;
-  const pdfs = files.filter(f => /\.pdf$/i.test(f.name));
-  const packs = files.filter(f => /\.json$/i.test(f.name));
-  let ok = 0, failed = [];
-  if (pdfs.length) {
-    const r = await importFiles(pdfs, bookId, (msg) => { prog.textContent = msg; });
-    ok += r.ok; failed.push(...r.failed);
+  prog.textContent = '判讀檔案類型…';
+
+  const kinds = await Promise.all(files.map(sniffKind));
+  const pdfs = files.filter((f, i) => kinds[i] === 'pdf');
+  const packs = files.filter((f, i) => kinds[i] === 'pack');
+  const bookFiles = files.filter((f, i) => kinds[i] === 'book');
+  const backups = files.filter((f, i) => kinds[i] === 'backup');
+
+  const done = [], failed = [];
+  let lastBookId = null, chapters = 0;
+
+  // 書籍檔：自己帶書名，先處理，這樣接下來的「收進哪一本書」才看得到新書
+  if (bookFiles.length) {
+    try {
+      const n = await importBookFiles(bookFiles, (m) => { prog.textContent = m; });
+      done.push(`書籍檔 ${n.books} 本書、${n.sections} 個章節、${n.highlights} 個標記`);
+      chapters += n.sections;
+      await fillBookSelect();
+    } catch (err) {
+      failed.push(`書籍檔（${err.message || err}）`);
+    }
   }
-  if (packs.length) {
-    const r = await importPacks(packs, bookId, (msg) => { prog.textContent = msg; });
-    ok += r.ok; failed.push(...r.failed);
+
+  // PDF 與內容包沒有書的歸屬，這時才問要收進哪一本
+  if (pdfs.length || packs.length) {
+    const bookId = await resolveTargetBook();
+    if (!bookId) {
+      failed.push('章節檔（沒有選擇要收進哪一本書）');
+    } else {
+      lastBookId = bookId;
+      if (pdfs.length) {
+        const r = await importFiles(pdfs, bookId, (m) => { prog.textContent = m; });
+        if (r.ok) done.push(`章節 PDF ${r.ok} 個`);
+        chapters += r.ok; failed.push(...r.failed);
+      }
+      if (packs.length) {
+        const r = await importPacks(packs, bookId, (m) => { prog.textContent = m; });
+        if (r.ok) done.push(`內容包 ${r.ok} 個章節`);
+        chapters += r.ok; failed.push(...r.failed);
+      }
+    }
   }
-  prog.textContent = `完成：成功 ${ok} 個章節` + (failed.length ? `，失敗 ${failed.length} 個：${failed.join('、')}` : '');
-  e.target.value = '';
-  await renderBookList();
-  if (ok) { toast(`已匯入 ${ok} 個章節`); openBook(bookId); }
+
+  if (backups.length) {
+    failed.push(`${backups.map(f => f.name).join('、')}（這是整機備份，請用下方「還原備份」）`);
+  }
+
+  prog.textContent = (done.length ? `完成：${done.join('、')}` : '沒有匯入任何內容')
+    + (failed.length ? `　失敗 ${failed.length} 個：${failed.join('、')}` : '');
+  await renderSettings();
+  if (chapters) {
+    toast(`已匯入 ${chapters} 個章節`);
+    if (lastBookId) openBook(lastBookId);
+    else switchView('shelf');
+  }
 });
 
 /* ----- 書籍管理 ----- */
@@ -443,25 +494,7 @@ async function exportBook(book) {
   toast('匯出完成');
 }
 
-/* ----- 匯入書籍檔 ----- */
-$('#btn-import-book').addEventListener('click', () => $('#book-input').click());
-$('#book-input').addEventListener('change', async (e) => {
-  const files = [...(e.target.files || [])];
-  e.target.value = '';
-  if (!files.length) return;
-  const prog = $('#book-progress');
-  prog.hidden = false;
-  try {
-    const n = await importBookFiles(files, (m) => { prog.textContent = m; });
-    prog.textContent = `匯入完成：${n.books} 本書、${n.sections} 個章節、${n.highlights} 個標記。`;
-    toast('匯入完成');
-    await renderSettings();
-    switchView('shelf');
-  } catch (err) {
-    prog.textContent = `匯入失敗：${err.message || err}`;
-  }
-});
-
+/* ----- 匯入書籍檔（由上面「加入內容」的單一入口依檔案內容呼叫） ----- */
 async function importBookFiles(files, onStatus) {
   // 一個檔案讀完就寫進 DB 再放掉。若先把 13 份 20 MB 的檔案全 parse 起來，
   // 光是圖片就會讓手機在開始寫入之前就被記憶體壓死。

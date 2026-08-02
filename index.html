@@ -69,11 +69,13 @@
         <label class="row stack">收進哪一本書
           <select id="import-target"></select>
         </label>
-        <button id="btn-import" class="btn primary">匯入章節（PDF / 內容包）</button>
+        <button id="btn-import" class="btn primary">匯入檔案</button>
         <input type="file" id="file-input" accept=".pdf,.json,application/pdf,application/json" multiple hidden>
-        <p class="hint">可一次選多個檔案。支援：<br>
-          ① 章節 PDF（就地抽取文字），檔名建議「第1章第2節 標題.pdf」或「1-2 標題.pdf」<br>
-          ② 內容包 .json（預轉換的章節，含圖片）<br>
+        <p class="hint">可一次選多個檔案，會自動判讀類型。支援：<br>
+          ① 書籍檔 .book.json（整本書，含螢光筆與筆記；分成多份時請一次全選）<br>
+          ② 章節 PDF（就地抽取文字），檔名建議「第1章第2節 標題.pdf」或「1-2 標題.pdf」<br>
+          ③ 內容包 .json（預轉換的章節，含圖片）<br>
+          ②③ 會收進上面選的那本書；① 依書籍檔自己的書名歸位。<br>
           內容只儲存在此裝置，不會上傳。</p>
         <div id="import-progress" class="hint" hidden></div>
       </div>
@@ -82,8 +84,6 @@
         <h2>書籍管理</h2>
         <p class="hint">匯出的書籍檔包含該書的全部內容、螢光筆與筆記，可在另一支手機匯入接著讀。</p>
         <div id="book-list"></div>
-        <button id="btn-import-book" class="btn">匯入書籍檔</button>
-        <input type="file" id="book-input" accept=".json,application/json" hidden>
         <div id="book-progress" class="hint" hidden></div>
       </div>
 
