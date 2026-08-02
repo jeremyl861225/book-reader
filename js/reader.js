@@ -51,21 +51,81 @@ function saveLastRead() {
   localStorage.setItem('lastRead', JSON.stringify({ sectionId: cur.section.id, at: Date.now() }));
 }
 
-/* ---------- 渲染 ---------- */
+/* ---------- 段落分類 ---------- */
+// 轉檔後的內容包只有純文字，標題與內文長得一樣。這裡在閱讀時判讀出層級，
+// 讓版面有輕重之分。判讀只影響「樣式」，不會改動文字，
+// 所以既有螢光筆的段落索引與字元偏移都不受影響。
+
 // 圖說：「Figure 3.1.」「Table 2」「圖 5-1」開頭
 const CAPTION_RE = /^(Figure|Fig\.|Table|Chart|Box|圖|表)\s*[\dA-Z]+[.\-–:]/i;
-// 小標：短、沒有句尾標點、且是全大寫或標題式大小寫
-const HEADING_RE = /^[^。．.!?！？]{2,48}$/;
-function isHeading(t) {
-  if (!HEADING_RE.test(t)) return false;
+// 句尾標點：有的話就不是標題
+const ENDS_SENTENCE = /[.!?;:,。！？；：，、]["'”』)）]?$/;
+// 標題大小寫時可以維持小寫的虛詞
+const SMALL_WORDS = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'for', 'to',
+  'with', 'by', 'from', 'at', 'as', 'via', 'vs', 'nor', 'but', 'per']);
+
+const isAllCaps = (t) => {
   const letters = t.replace(/[^A-Za-z]/g, '');
-  if (letters.length >= 3 && letters === letters.toUpperCase()) return true;
-  return false;
+  return letters.length >= 3 && letters === letters.toUpperCase();
+};
+
+// 標題式大小寫：每個實詞都以大寫（或數字）開頭
+function isTitleCase(t) {
+  const words = t.split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 12) return false;
+  const content = words.filter(w => !SMALL_WORDS.has(w.toLowerCase().replace(/[^a-z]/g, '')));
+  if (!content.length) return false;
+  return content.every(w => /^["'(\[]*[A-Z0-9]/.test(w));
 }
 
-function paraClass(text) {
+// 獨立成段的小標
+function isHeading(t) {
+  if (t.length > 90 || ENDS_SENTENCE.test(t)) return false;
+  return isAllCaps(t) || isTitleCase(t);
+}
+
+// 作者列：整行只有人名（每個字都大寫開頭，連接詞只允許 and/&）
+function isByline(t) {
+  if (t.length > 90 || ENDS_SENTENCE.test(t)) return false;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > 14) return false;
+  return words.every(w => /^[A-Z]/.test(w) || /^(and|&)$/i.test(w));
+}
+
+// 內嵌小標：標題被排版黏在段落開頭（例：「INTRODUCTION Aortoiliac occlusive…」）。
+// 只認「全大寫」的那種——它是本類書每章的骨架標題，判斷可靠；
+// 標題式大小寫的內嵌標題（「Light Criteria According to…」）界線常常曖昧，
+// 寧可放著不動，也不要把正文誤加粗。回傳標題結束的字元位置，沒有就回 0。
+const ALLCAPS_WORD = /^[A-Z][A-Z0-9/&'’.–-]*$/;
+
+function inlineHeadEnd(text) {
+  if (text.length < 60) return 0;          // 太短的段落交給獨立小標去判
+  const words = text.split(' ');
+  let n = 0;
+  while (n < words.length && n < 14 && words[n].length >= 2 && ALLCAPS_WORD.test(words[n])) n++;
+  if (!n) return 0;
+
+  const endAt = (k) => words.slice(0, k).join(' ').length;
+  // 尾巴若是屬於句子的縮寫（「… PATHOPHYSIOLOGY AIOD is …」），還給內文。
+  // 後面可能以破折號等標點起頭，先略過再判斷是不是新句子的開頭。
+  while (n > 0) {
+    const rest = text.slice(endAt(n)).replace(/^[\s—–:.,、－-]+/, '');
+    if (/^[A-Z(“"']/.test(rest)) break;
+    n--;
+  }
+  if (!n) return 0;
+
+  const end = endAt(n);
+  if (end < 5) return 0;                                   // 單一短縮寫（CT、MRI）不算標題
+  if (text.length - end < 40) return 0;                    // 後面要真的還有內文
+  return end;
+}
+
+function paraClass(text, i) {
+  if (i === 0) return 'para title';
+  if (i === 1 && isByline(text)) return 'para byline';
   if (CAPTION_RE.test(text)) return 'para caption';
-  if (isHeading(text)) return 'para heading';
+  if (isHeading(text)) return 'para heading' + (isAllCaps(text) ? ' h1' : ' h2');
   return 'para';
 }
 
@@ -74,7 +134,7 @@ function renderContent() {
   cur.section.paras.forEach((item, i) => {
     if (typeof item === 'string') {
       const p = document.createElement('p');
-      p.className = paraClass(item);
+      p.className = paraClass(item, i);
       p.dataset.i = i;
       renderPara(p, item, i);
       frag.appendChild(p);
@@ -109,10 +169,15 @@ function renderPara(p, text, paraIdx) {
   const hls = cur.highlights
     .filter(h => h.paraIdx === paraIdx)
     .sort((a, b) => a.start - b.start);
-  if (!hls.length) { p.textContent = text; return; }
+  // 只有純內文段落才找內嵌小標（標題／圖說本身不必再切）
+  const headEnd = p.classList.contains('para') && p.className === 'para' ? inlineHeadEnd(text) : 0;
 
-  // 依標記邊界切割文字
+  if (!hls.length && !headEnd) { p.textContent = text; return; }
+
+  // 依標記邊界（與內嵌小標的分界）切割文字。文字內容不變，
+  // 所以標記的字元偏移仍然對得上。
   const points = new Set([0, text.length]);
+  if (headEnd) points.add(headEnd);
   hls.forEach(h => { points.add(Math.min(h.start, text.length)); points.add(Math.min(h.end, text.length)); });
   const cuts = [...points].sort((a, b) => a - b);
   p.textContent = '';
@@ -121,15 +186,23 @@ function renderPara(p, text, paraIdx) {
     const seg = text.slice(s, e);
     if (!seg) continue;
     const owner = hls.find(h => h.start <= s && h.end >= e);
+    let node;
     if (owner) {
-      const m = document.createElement('mark');
-      m.className = `hl-${owner.color}` + (groupNote(owner.groupId) ? ' has-note' : '');
-      m.dataset.hl = owner.id;
-      m.dataset.group = owner.groupId;
-      m.textContent = seg;
-      p.appendChild(m);
+      node = document.createElement('mark');
+      node.className = `hl-${owner.color}` + (groupNote(owner.groupId) ? ' has-note' : '');
+      node.dataset.hl = owner.id;
+      node.dataset.group = owner.groupId;
+      node.textContent = seg;
     } else {
-      p.appendChild(document.createTextNode(seg));
+      node = document.createTextNode(seg);
+    }
+    if (headEnd && e <= headEnd) {
+      const b = document.createElement('b');
+      b.className = 'run-head';
+      b.appendChild(node);
+      p.appendChild(b);
+    } else {
+      p.appendChild(node);
     }
   }
 }

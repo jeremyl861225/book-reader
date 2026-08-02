@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.0.1';
+const APP_VERSION = 'v2.1.0';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -505,6 +505,10 @@ function applyPrefs() {
   document.documentElement.style.setProperty('--reader-font', `${size}px`);
   $('#font-size').value = size;
   $('#font-size-val').textContent = `${size}px`;
+  const lh = localStorage.getItem('lineHeight') || '1.9';
+  document.documentElement.style.setProperty('--reader-lh', lh);
+  $('#line-height').value = lh;
+  $('#line-height-val').textContent = Number(lh).toFixed(1);
   const theme = localStorage.getItem('theme') || 'auto';
   $('#theme-sel').value = theme;
   if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
@@ -512,6 +516,10 @@ function applyPrefs() {
 }
 $('#font-size').addEventListener('input', (e) => {
   localStorage.setItem('fontSize', e.target.value);
+  applyPrefs();
+});
+$('#line-height').addEventListener('input', (e) => {
+  localStorage.setItem('lineHeight', e.target.value);
   applyPrefs();
 });
 $('#theme-sel').addEventListener('change', (e) => {

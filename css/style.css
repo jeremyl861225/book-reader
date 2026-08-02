@@ -27,6 +27,7 @@
   --sh-2: 0 2px 4px rgba(78, 64, 40, .06), 0 10px 28px rgba(78, 64, 40, .09);
 
   --reader-font: 18px;
+  --reader-lh: 1.9;
   /* 螢光筆：在米白紙上調過的柔和色，四色仍清楚可辨 */
   --hl-yellow: #F4E3A4;
   --hl-green: #CCE0C4;
@@ -326,21 +327,46 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
 #reader-content {
   flex: 1; overflow-y: auto;
   padding: 24px 22px calc(40px + var(--safe-bottom));
-  font-size: var(--reader-font); line-height: 1.9; color: var(--ink);
+  font-size: var(--reader-font); line-height: var(--reader-lh); color: var(--ink);
   max-width: 700px; margin: 0 auto; width: 100%;
   -webkit-user-select: text; user-select: text;
 }
-#reader-content p { margin: 0 0 1.15em; text-align: justify; hyphens: auto; }
+/* 靠左不對齊右緣：頁面只有一欄又窄，強制兩端對齊會在長單字之間拉出空隙 */
+#reader-content p { margin: 0 0 1.15em; text-align: left; }
+
+/* 章名：整章最大的一級 */
+#reader-content p.title {
+  font-size: 1.45em; font-weight: 700; line-height: 1.3; letter-spacing: -.01em;
+  text-align: left; margin: 0 0 .4em; color: var(--ink);
+}
+/* 作者列 */
+#reader-content p.byline {
+  font-size: .8em; color: var(--muted); text-align: left;
+  margin: 0 0 2em; padding-bottom: 1.1em; border-bottom: 1px solid var(--line);
+}
 /* 圖說：跟在圖後面，字小一級、不與正文混淆 */
 #reader-content p.caption {
   font-size: .82em; line-height: 1.6; color: var(--muted);
   text-align: left; margin: -.6em 0 1.6em;
 }
-/* 內文小標 */
-#reader-content p.heading {
-  font-size: .8em; font-weight: 700; letter-spacing: .12em;
-  color: var(--accent-ink); text-align: left; margin: 1.9em 0 .7em;
+/* 內文小標：h1＝原文全大寫的大節，h2＝標題式大小寫的小節 */
+#reader-content p.heading { text-align: left; }
+#reader-content p.heading.h1 {
+  font-size: .78em; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--accent-ink); line-height: 1.5; margin: 2.2em 0 .6em;
 }
+#reader-content p.heading.h2 {
+  font-size: 1.02em; font-weight: 700; letter-spacing: .01em;
+  color: var(--ink); line-height: 1.45; margin: 1.7em 0 .5em;
+}
+/* 被排版黏在段落開頭的小標：獨立成一行，不要和內文擠在同一行 */
+#reader-content b.run-head {
+  display: block; font-weight: 700; color: var(--accent-ink);
+  font-size: .78em; letter-spacing: .14em; line-height: 1.5;
+  margin-bottom: .35em;
+}
+/* 第一段標題不需要上緣留白 */
+#reader-content p.title + p.heading, #reader-content p.byline + p.heading { margin-top: .4em; }
 #reader-content figure.fig { margin: 1.6em 0; text-align: center; }
 #reader-content figure.fig img {
   max-width: 100%; height: auto; border-radius: var(--r-md);
