@@ -139,13 +139,16 @@ function renderContent() {
       renderPara(p, item, i);
       frag.appendChild(p);
     } else if (item && item.img) {
+      const isTable = item.kind === 'table';
       const fig = document.createElement('figure');
-      fig.className = 'fig';
+      fig.className = 'fig' + (isTable ? ' table' : '');
       fig.dataset.i = i;
       const img = document.createElement('img');
       img.src = item.img;
       img.loading = 'lazy';
-      img.alt = item.caption || '圖片';
+      img.alt = item.caption || (isTable ? '表格' : '圖片');
+      // 表格與細節圖在手機上會縮得看不清，點一下放大來看
+      img.addEventListener('click', () => openZoom(item.img, img.alt));
       fig.appendChild(img);
       if (item.caption) {
         const fc = document.createElement('figcaption');
@@ -205,6 +208,19 @@ function renderPara(p, text, paraIdx) {
       p.appendChild(node);
     }
   }
+}
+
+/* 放大檢視：整張圖可捲動，點任意處或按 Esc 關閉 */
+function openZoom(src, alt) {
+  const ov = document.createElement('div');
+  ov.className = 'zoom-overlay';
+  ov.innerHTML = `<div class="zoom-inner"><img src="${src}" alt="${alt}"></div>
+                  <button class="zoom-close" aria-label="關閉">✕</button>`;
+  const close = () => { ov.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  ov.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(ov);
 }
 
 function rerenderParas(indices) {

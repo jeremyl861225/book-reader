@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""把章節 PDF 轉成 Book reader 內容包（.json，含文字段落與圖片）。
+"""把章節 PDF 轉成 Book reader 內容包（.json，含文字段落、插圖與表格）。
 
 用法：
     python3 convert.py <輸入> <輸出資料夾> [--max-width=1200] [--quality=78]
+                       [--zoom=2.0] [--no-regions]
 
 <輸入> 可以是：
 - 整本書的根資料夾（含「01 - SECTION I - ...」等 Section 子資料夾）
@@ -11,23 +12,53 @@
 - 單一 Section 資料夾或單一 PDF
 
 也支援「第1章第2節 標題.pdf」「1-2 標題.pdf」等中文命名。
-每個 PDF 產生一個同名 .json 內容包。可用 app 的「匯入章節」直接載入，
-或再用 make_book.py 打包成書籍檔（一次匯入整本，並可攜帶螢光筆與筆記）。
+每個 PDF 產生一個同名 .json 內容包，可用 app 的「匯入章節」直接載入，
+或再用 make_book.py 打包成書籍檔。
+
+雙欄教科書的處理
+----------------
+- **閱讀順序**：PyMuPDF 的區塊順序在雙欄書上常把右欄排到左欄前面，
+  這裡改成自己依欄重排（跨欄元素切段，段內先左欄後右欄）。
+- **頁首頁尾**：以「跨頁重複的文字」找出書眉，連同頁碼一起濾掉。
+- **插圖**：解剖圖多半是**向量繪圖**而非嵌入點陣圖，逐一抓 image block
+  會整張漏掉。改成把向量與點陣的墨跡叢集成區域，整塊算圖。
+- **表格**：這類書的表格常無框線又緊排，硬做結構化還原會把欄位切在字中間
+  （臨床表格配錯欄位比沒有還糟），所以同樣整塊算圖，另外保留純文字供搜尋。
+  只有掛在「TABLE n.m」標題底下的小字叢集才算表格，避免把參考文獻那種
+  小字清單也變成圖片。
 """
 import base64
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import fitz  # PyMuPDF
 
-MIN_IMG_PX = 60        # 忽略太小的圖（裝飾、雜訊）
-MIN_IMG_BYTES = 3000
+MIN_IMG_PX = 60
+
+INK_GAP = 14            # 墨跡叢集允許的間隙（pt）
+MIN_REGION_W = 90       # 區域最小寬高，濾掉行內符號與裝飾線
+MIN_REGION_H = 70
+TEXT_GAP = 9            # 表格小字叢集的間隙
+MIN_TABLE_H = 36
+CAPTION_REACH = 40      # 標題與其表格／插圖之間允許的距離（pt）
+
+HEAD_BAND = 0.075       # 頁首帶（佔頁高比例）
+FOOT_BAND = 0.925       # 頁尾帶
 
 CN_NUM = {'零': 0, '一': 1, '二': 2, '兩': 2, '三': 3, '四': 4, '五': 5,
           '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
 
+TABLE_CAP = re.compile(r'^\s*(TABLE|表)\s*[\d.]+', re.I)
+FIG_CAP = re.compile(r'^\s*(FIGURE|FIG\.|圖)\s*[\d.]+', re.I)
+PAGE_NUM = re.compile(r'^\s*[ivxlcdm\d]{1,6}\s*$', re.I)
+# 章首的裝飾字樣：「C H A P T E R」「26 C H A P T E R」
+CHAPTER_DECOR = re.compile(r'^\s*\d*\s*C\s*H\s*A\s*P\s*T\s*E\s*R\s*\d*\s*$', re.I)
+
+
+# ---------- 檔名／資料夾解析 ----------
 
 def cn_to_int(s):
     if s.isdigit():
@@ -57,12 +88,10 @@ def parse_filename(name):
     """回傳 (chapter, section, title)。chapter 通常由資料夾決定，這裡處理檔名。"""
     base = re.sub(r'\.pdf$', '', name, flags=re.I).strip()
 
-    # CHnnn - 標題（本書格式）→ section = nnn
     m = re.match(r'^CH\s*(\d+)\s*[-–]\s*(.+)$', base, flags=re.I)
     if m:
         return None, int(m.group(1)), m.group(2).strip()
 
-    # 「00 - Front Matter」「99 - Index」等根目錄檔案
     m = re.match(r'^\s*(\d+)\s*[-–]\s*(.+)$', base)
     if m and int(m.group(1)) in (0, 99):
         return int(m.group(1)), None, m.group(2).strip()
@@ -90,58 +119,20 @@ def parse_filename(name):
     return ch, sec, title
 
 
-SENT_END = re.compile(r'[。！？…；.!?]["」』)〉》\]]?$')
+# ---------- 文字整理 ----------
 
+SENT_END = re.compile(r'[。！？…；.!?]["」』)〉》\]]?$')
 # 行尾是這些縮寫時，句點不代表句子結束（例：「… ( Figs.」接下一行的圖號）
 ABBR_END = re.compile(
     r'(?:\b(?:Figs?|Tabs?|Tables?|Eqs?|Refs?|Chaps?|Vols?|Nos?|pp|approx|ca'
     r'|e\.g|i\.e|et al|vs|cf|Dr|Mr|Mrs|Ms|Prof|Jr|Sr|St|Inc|Ltd'
     r'|U\.S|Ph\.D|M\.D|B\.C|A\.D)|\b[A-Za-z])\.$', re.I)
 
-# 行尾比右邊界短多少才算「段落最後一行」（相對於區塊寬度）
-SHORT_LINE_RATIO = 0.06
 
-
-def flush(cur, paras):
-    t = cur.strip()
-    if t:
-        paras.append(re.sub(r'\s{2,}', ' ', t))
-    return ''
-
-
-def line_text(line):
-    text = ''.join(span['text'] for span in line.get('spans', []))
-    return text.replace('\xa0', ' ').replace('​', '').strip()
-
-
-def block_size(block):
-    """回傳區塊的主要字級（依字元數加權），用來分辨內文／標題／圖說。"""
-    tally = {}
-    for line in block.get('lines', []):
-        for span in line.get('spans', []):
-            n = len(span.get('text', '').strip())
-            if n:
-                tally[round(span['size'], 1)] = tally.get(round(span['size'], 1), 0) + n
-    if not tally:
-        return None
-    return max(tally.items(), key=lambda kv: kv[1])[0]
-
-
-def body_size(doc):
-    """全文最常見的字級＝內文字級。"""
-    tally = {}
-    for page in doc:
-        for block in page.get_text('dict')['blocks']:
-            if block['type'] != 0:
-                continue
-            for line in block.get('lines', []):
-                for span in line.get('spans', []):
-                    n = len(span.get('text', '').strip())
-                    if n:
-                        tally[round(span['size'], 1)] = tally.get(round(span['size'], 1), 0) + n
-    if not tally:
-        return None
-    return max(tally.items(), key=lambda kv: kv[1])[0]
+def clean(t):
+    t = t.replace('\xad', '').replace('​', '')
+    t = re.sub(r'(?<=[a-z])-\s+(?=[a-z])', '', t)   # 跨行斷字：endo- scopic → endoscopic
+    return re.sub(r'\s{2,}', ' ', t).strip()
 
 
 def join_line(cur, text):
@@ -155,97 +146,301 @@ def join_line(cur, text):
     return cur + text
 
 
-def ends_paragraph(text, line, left_edge, right_edge):
-    """這一行是不是段落的最後一行：句尾標點 ＋ 行尾明顯短於右邊界。"""
-    if not SENT_END.search(text) or ABBR_END.search(text):
+# ---------- 幾何 ----------
+
+def merge_rects(rects, gap):
+    out = [fitz.Rect(r) for r in rects]
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                if (out[i] + (-gap, -gap, gap, gap)).intersects(out[j]):
+                    out[i] |= out[j]
+                    out.pop(j)
+                    changed = True
+                    break
+            if changed:
+                break
+    return out
+
+
+def covers(outer, inner, frac=0.6):
+    r = fitz.Rect(inner)
+    hit = fitz.Rect(outer) & r
+    return hit.is_valid and not hit.is_empty and hit.get_area() > r.get_area() * frac
+
+
+def line_size(line):
+    tally = Counter()
+    for s in line.get('spans', []):
+        n = len(s['text'].strip())
+        if n:
+            tally[round(s['size'], 1)] += n
+    return tally.most_common(1)[0][0] if tally else None
+
+
+def line_text(line):
+    t = ''.join(s['text'] for s in line.get('spans', []))
+    return t.replace('\xa0', ' ').replace('​', '').strip()
+
+
+def page_lines(page):
+    out = []
+    for block in page.get_text('dict')['blocks']:
+        if block['type'] != 0:
+            continue
+        for line in block.get('lines', []):
+            t = line_text(line)
+            if t:
+                out.append({'text': t, 'bbox': line['bbox'], 'size': line_size(line)})
+    return out
+
+
+def doc_profile(doc):
+    """整份文件的內文字級，以及跨頁重複的書眉字串。"""
+    sizes = Counter()
+    band_texts = Counter()
+    n_pages = doc.page_count
+    for page in doc:
+        H = page.rect.height
+        for l in page_lines(page):
+            for_size = len(l['text'].strip())
+            if l['size'] is not None and for_size:
+                sizes[l['size']] += for_size
+            y0, y1 = l['bbox'][1], l['bbox'][3]
+            if y1 <= H * HEAD_BAND or y0 >= H * FOOT_BAND:
+                key = re.sub(r'\d+', '', l['text']).strip()
+                if len(key) >= 4:
+                    band_texts[key] += 1
+    body = sizes.most_common(1)[0][0] if sizes else None
+    running = {k for k, c in band_texts.items() if c >= max(3, n_pages * 0.4)}
+    return body, running
+
+
+def is_running_head(line, H, running):
+    y0, y1 = line['bbox'][1], line['bbox'][3]
+    if y1 > H * HEAD_BAND and y0 < H * FOOT_BAND:
         return False
-    width = right_edge - left_edge
-    if width <= 0:
+    t = line['text'].strip()
+    if PAGE_NUM.match(t) or CHAPTER_DECOR.match(t):
         return True
-    return line['bbox'][2] < right_edge - width * SHORT_LINE_RATIO
+    return re.sub(r'\d+', '', t).strip() in running
 
 
-def image_to_dataurl(raw, max_width, quality):
-    """回傳 dataurl；太小的圖回傳 None。"""
-    try:
-        pix = fitz.Pixmap(raw)
-    except Exception:
-        return None
+# ---------- 區域偵測 ----------
+
+def ink_regions(page):
+    """向量繪圖＋嵌入點陣圖的叢集＝插圖（或有框線的表格）。"""
+    ink = []
+    for d in page.get_drawings():
+        r = fitz.Rect(d['rect']) & page.rect
+        if r.is_valid and not r.is_empty and (r.width >= 2 or r.height >= 2):
+            ink.append(r)
+    for b in page.get_text('dict')['blocks']:
+        if b['type'] == 1:
+            r = fitz.Rect(b['bbox']) & page.rect
+            if r.is_valid and not r.is_empty:
+                ink.append(r)
+    if not ink:
+        return []
+    return [r for r in merge_rects(ink, INK_GAP)
+            if r.width >= MIN_REGION_W and r.height >= MIN_REGION_H]
+
+
+def caption_anchored_tables(page, body, lines, taken):
+    """無框線表格：以「TABLE n.m」標題為錨，往下收同欄的小字叢集。"""
+    if body is None:
+        return []
+    caps = [l for l in lines if TABLE_CAP.match(l['text'])]
+    if not caps:
+        return []
+    small = [fitz.Rect(l['bbox']) for l in lines
+             if l['size'] is not None and l['size'] < body - 0.4
+             and not TABLE_CAP.match(l['text']) and not FIG_CAP.match(l['text'])
+             and not any(covers(t, l['bbox']) for t in taken)]
+    if not small:
+        return []
+    clusters = [r for r in merge_rects(small, TEXT_GAP)
+                if r.height >= MIN_TABLE_H and r.width >= MIN_REGION_W * 0.5]
+    out = []
+    for cap in caps:
+        cx0, cy0, cx1, cy1 = cap['bbox']
+        region = None
+        bottom = cy1
+        for r in sorted(clusters, key=lambda r: r.y0):
+            if r.y0 < cy1 - 2:
+                continue
+            # 同一欄：水平投影要和標題重疊
+            if min(r.x1, cx1) - max(r.x0, cx0) < min(r.width, cx1 - cx0) * 0.35:
+                continue
+            if r.y0 - bottom > CAPTION_REACH:
+                continue
+            txt = page.get_text(clip=r).strip()
+            if FIG_CAP.match(txt):
+                continue
+            region = r if region is None else (region | r)
+            bottom = max(bottom, r.y1)
+        if region is not None:
+            out.append(region)
+    return out
+
+
+def classify(page, region, lines):
+    """看區域內、或緊鄰上方的標題，判斷這塊是表格還是插圖。"""
+    inner = page.get_text(clip=region).strip()
+    if TABLE_CAP.match(inner):
+        return 'table'
+    if FIG_CAP.match(inner):
+        return 'figure'
+    best, best_gap = None, CAPTION_REACH
+    for l in lines:
+        x0, y0, x1, y1 = l['bbox']
+        gap = region.y0 - y1
+        if gap < -2 or gap > best_gap:
+            continue
+        if min(x1, region.x1) - max(x0, region.x0) < min(x1 - x0, region.width) * 0.3:
+            continue
+        if TABLE_CAP.match(l['text']) or FIG_CAP.match(l['text']):
+            best, best_gap = l['text'], gap
+    if best and TABLE_CAP.match(best):
+        return 'table'
+    return 'figure'
+
+
+def region_image(page, rect, max_width, quality, zoom):
+    z = min(zoom, max_width / max(rect.width, 1))
+    pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(z, z), alpha=False)
     if pix.width < MIN_IMG_PX or pix.height < MIN_IMG_PX:
         return None
-    if pix.colorspace is None or pix.n - pix.alpha > 3:
-        pix = fitz.Pixmap(fitz.csRGB, pix)
-    if pix.alpha:
-        pix = fitz.Pixmap(pix, 0)
-    while pix.width > max_width * 1.5:  # shrink 每次縮一半
-        pix.shrink(1)
-    try:
-        data = pix.tobytes('jpg', jpg_quality=quality)
-        return 'data:image/jpeg;base64,' + base64.b64encode(data).decode()
-    except Exception:
-        data = pix.tobytes('png')
-        return 'data:image/png;base64,' + base64.b64encode(data).decode()
+    return 'data:image/jpeg;base64,' + base64.b64encode(pix.tobytes('jpg', jpg_quality=quality)).decode()
 
 
-def convert_pdf(path, max_width=1200, quality=78):
+# ---------- 版面 → 閱讀順序 ----------
+
+def order_items(items, page_width):
+    """雙欄閱讀順序：跨欄項目切段，段內先左欄再右欄。"""
+    if not items:
+        return []
+    mid = page_width / 2
+    for it in items:
+        x0, _, x1, _ = it['bbox']
+        it['full'] = (x1 - x0) > page_width * 0.62
+        it['left'] = ((x0 + x1) / 2) < mid
+    items.sort(key=lambda it: (it['bbox'][1], it['bbox'][0]))
+
+    out, left, right = [], [], []
+
+    def flush():
+        out.extend(sorted(left, key=lambda it: (it['bbox'][1], it['bbox'][0])))
+        out.extend(sorted(right, key=lambda it: (it['bbox'][1], it['bbox'][0])))
+        left.clear()
+        right.clear()
+
+    for it in items:
+        if it['full']:
+            flush()
+            out.append(it)
+        elif it['left']:
+            left.append(it)
+        else:
+            right.append(it)
+    flush()
+    return out
+
+
+def page_items(page, body, running, use_regions):
+    H, W = page.rect.height, page.rect.width
+    lines = page_lines(page)
+
+    regions = []
+    if use_regions:
+        ink = ink_regions(page)
+        regions = ink + caption_anchored_tables(page, body, lines, ink)
+        regions = merge_rects(regions, 0)
+        regions = [r for r in regions
+                   if not (r.width > W * 0.95 and r.height > H * 0.9)]
+
+    items = []
+    for l in lines:
+        if is_running_head(l, H, running):
+            continue
+        if any(covers(r, l['bbox']) for r in regions):    # 圖內標籤、表格內文
+            continue
+        items.append({'kind': 'text', 'bbox': l['bbox'], 'text': l['text'], 'size': l['size']})
+    for r in regions:
+        items.append({'kind': 'region', 'bbox': tuple(r), 'rect': r,
+                      'sub': classify(page, r, lines), 'text': clean(page.get_text(clip=r))})
+    return order_items(items, W)
+
+
+# ---------- 轉檔 ----------
+
+def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
     doc = fitz.open(path)
-    body = body_size(doc)
+    body, running = doc_profile(doc)
     paras = []
-    cur = ''          # 尚未收尾的段落（可跨區塊、跨頁接續）
-    pending_img = []  # 段落中途遇到的插圖，等段落收完再放
-    n_img = 0
+    cur, cur_size = '', None
+    pending = []
+    n_img = n_tab = 0
+
+    def flush_text():
+        nonlocal cur, cur_size
+        t = clean(cur)
+        if t:
+            paras.append(t)
+        cur, cur_size = '', None
+
+    def emit(obj):
+        nonlocal n_img, n_tab
+        paras.append(obj)
+        if obj.get('kind') == 'table':
+            n_tab += 1
+        else:
+            n_img += 1
 
     def emit_pending():
-        nonlocal n_img
-        for url in pending_img:
-            paras.append({'img': url})
-            n_img += 1
-        pending_img.clear()
+        for obj in pending:
+            emit(obj)
+        pending.clear()
 
     for page in doc:
-        for block in page.get_text('dict')['blocks']:
-            if block['type'] == 0:  # 文字
-                lines = [l for l in block.get('lines', []) if line_text(l)]
-                if not lines:
-                    continue
-                size = block_size(block)
-                # 字級和內文不同 → 標題或圖說，自成一段，不與前後文合併
-                if body is not None and size is not None and abs(size - body) > 0.5:
-                    cur = flush(cur, paras)
-                    emit_pending()
-                    head = ''
-                    for line in lines:
-                        head = join_line(head, line_text(line))
-                    flush(head, paras)
-                    continue
-                left = block['bbox'][0]
-                right = max(l['bbox'][2] for l in lines)
-                for line in lines:
-                    text = line_text(line)
-                    cur = join_line(cur, text)
-                    if ends_paragraph(text, line, left, right):
-                        cur = flush(cur, paras)
-                        emit_pending()
-                # 區塊結尾若句子未完，保留 cur 接到下一個區塊／下一頁
-            elif block['type'] == 1:  # 圖片
-                raw = block.get('image')
-                if not raw or len(raw) < MIN_IMG_BYTES:
-                    continue
-                url = image_to_dataurl(raw, max_width, quality)
+        for it in page_items(page, body, running, use_regions):
+            if it['kind'] == 'region':
+                url = region_image(page, it['rect'], max_width, quality, zoom)
                 if not url:
                     continue
-                if cur:           # 段落還沒收完 → 先記著，等段落結束再插圖
-                    pending_img.append(url)
+                obj = {'img': url, 'kind': it['sub']}
+                if it['text']:
+                    obj['text'] = it['text'][:4000]
+                if cur:
+                    pending.append(obj)     # 段落還沒收完，等收完再插
                 else:
-                    paras.append({'img': url})
-                    n_img += 1
-    flush(cur, paras)
+                    emit(obj)
+                continue
+
+            size, text = it['size'], it['text']
+            off_body = body is not None and size is not None and abs(size - body) > 0.5
+            cur_off = body is not None and cur_size is not None and abs(cur_size - body) > 0.5
+            # 字級換檔（內文↔標題／圖說）就切段
+            if off_body != cur_off or (off_body and cur_size is not None and abs(size - cur_size) > 0.3):
+                flush_text()
+                emit_pending()
+            cur = join_line(cur, text)
+            cur_size = size
+            if SENT_END.search(text) and not ABBR_END.search(text):
+                flush_text()
+                emit_pending()
+    flush_text()
     emit_pending()
     doc.close()
-    return paras, n_img
+    # 章首的「26 C H A P T E R」裝飾字樣不在頁首帶內，收尾時再拿掉
+    while paras and isinstance(paras[0], str) and CHAPTER_DECOR.match(paras[0]):
+        paras.pop(0)
+    return paras, n_img, n_tab
 
 
-def convert_one(pdf, out_dir, chapter, chapter_title, max_width, quality, skip_existing=True):
+def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
     out = out_dir / (pdf.stem + '.json')
     if skip_existing and out.exists():
         print(f'skip（已存在）: {out.name}')
@@ -253,42 +448,44 @@ def convert_one(pdf, out_dir, chapter, chapter_title, max_width, quality, skip_e
     ch, sec, title = parse_filename(pdf.name)
     if chapter is not None:
         ch = chapter
-    paras, n_img = convert_pdf(pdf, max_width, quality)
+    paras, n_img, n_tab = convert_pdf(pdf, **opts)
     pack = {'app': 'book-reader-pack',
             'sections': [{'chapter': ch, 'chapterTitle': chapter_title,
                           'section': sec, 'title': title, 'paras': paras}]}
     out.write_text(json.dumps(pack, ensure_ascii=False), encoding='utf-8')
     n_text = sum(1 for p in paras if isinstance(p, str))
-    print(f'{pdf.name} -> {out.name}  章={ch} 節={sec}  段落={n_text} 圖={n_img}  {out.stat().st_size/1024:.0f}KB')
+    print(f'{pdf.name} -> 章={ch} 節={sec}  段落={n_text} 圖={n_img} 表={n_tab}  '
+          f'{out.stat().st_size/1024:.0f}KB', flush=True)
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    opts = {a.split('=')[0].lstrip('-'): a.split('=')[1] for a in sys.argv[1:] if a.startswith('--') and '=' in a}
+    flags = {a.split('=')[0].lstrip('-'): (a.split('=')[1] if '=' in a else True)
+             for a in sys.argv[1:] if a.startswith('--')}
     if len(args) < 2:
         print(__doc__)
         sys.exit(1)
     src, out_dir = Path(args[0]), Path(args[1])
-    max_width = int(opts.get('max-width', 1200))
-    quality = int(opts.get('quality', 78))
+    opts = {'max_width': int(flags.get('max-width', 1200)),
+            'quality': int(flags.get('quality', 78)),
+            'zoom': float(flags.get('zoom', 2.0)),
+            'use_regions': not flags.get('no-regions', False)}
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if src.is_file():
-        convert_one(src, out_dir, None, None, max_width, quality, skip_existing=False)
+        convert_one(src, out_dir, None, None, opts, skip_existing=False)
         return
 
-    # 資料夾：根目錄 PDF ＋ Section 子資料夾
     for pdf in sorted(src.glob('*.pdf')):
         ch, _, _ = parse_filename(pdf.name)
-        title_map = {0: '前言', 99: '附錄與索引'}
-        convert_one(pdf, out_dir, ch, title_map.get(ch), max_width, quality)
+        convert_one(pdf, out_dir, ch, {0: '前言', 99: '附錄與索引'}.get(ch), opts)
     for sub in sorted(p for p in src.iterdir() if p.is_dir()):
         ch, ch_title = parse_section_dir(sub.name)
         if ch is None:
             print(f'略過資料夾（無編號）: {sub.name}')
             continue
         for pdf in sorted(sub.glob('*.pdf')):
-            convert_one(pdf, out_dir, ch, ch_title, max_width, quality)
+            convert_one(pdf, out_dir, ch, ch_title, opts)
 
 
 if __name__ == '__main__':

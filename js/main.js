@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.1.0';
+const APP_VERSION = 'v2.2.0';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -168,13 +168,15 @@ $('#search-form').addEventListener('submit', async (e) => {
   const lower = q.toLowerCase();
   for (const s of sections) {
     s.paras.forEach((p, i) => {
-      if (typeof p !== 'string') return;
+      // 表格與插圖是整塊算圖保留的，但帶著純文字，一樣要搜得到
+      const text = typeof p === 'string' ? p : (p && p.text);
+      if (!text) return;
       let from = 0;
-      const pl = p.toLowerCase();
+      const pl = text.toLowerCase();
       while (results.length < 300) {
         const at = pl.indexOf(lower, from);
         if (at === -1) break;
-        results.push({ section: s, paraIdx: i, at });
+        results.push({ section: s, paraIdx: i, at, text, kind: typeof p === 'string' ? null : (p.kind || 'figure') });
         from = at + lower.length;
       }
     });
@@ -189,7 +191,7 @@ $('#search-form').addEventListener('submit', async (e) => {
   count.textContent = `共 ${results.length} 筆結果${results.length >= 300 ? '（僅顯示前 300 筆）' : ''}`;
   frag.appendChild(count);
   for (const r of results) {
-    const text = r.section.paras[r.paraIdx];
+    const text = r.text;
     const s0 = Math.max(0, r.at - 30);
     const e2 = Math.min(text.length, r.at + q.length + 40);
     const snippet = (s0 > 0 ? '…' : '') +
@@ -197,8 +199,9 @@ $('#search-form').addEventListener('submit', async (e) => {
       esc(text.slice(r.at + q.length, e2)) + (e2 < text.length ? '…' : '');
     const btn = document.createElement('button');
     btn.className = 'result-item';
+    const tag = r.kind === 'table' ? '［表格］' : r.kind === 'figure' ? '［圖］' : '';
     const where = (multi ? `${esc(bookTitle.get(r.section.bookId) || '')}・` : '') +
-      `${esc(chapterLabelFor(r.section))}・${esc(sectionLabel(r.section))}`;
+      `${esc(chapterLabelFor(r.section))}・${esc(sectionLabel(r.section))}${tag}`;
     btn.innerHTML = `<div class="loc">${where}</div>${snippet}`;
     btn.onclick = () => openReader(r.section.id, { scrollToPara: r.paraIdx });
     frag.appendChild(btn);
