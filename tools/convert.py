@@ -129,21 +129,69 @@ ABBR_END = re.compile(
     r'|U\.S|Ph\.D|M\.D|B\.C|A\.D)|\b[A-Za-z])\.$', re.I)
 
 
+SOFT_JOIN = '\x00'      # 待決定的斷行連字號，整章讀完後再解析
+
+
 def clean(t):
     t = t.replace('\xad', '').replace('​', '')
-    t = re.sub(r'(?<=[a-z])-\s+(?=[a-z])', '', t)   # 跨行斷字：endo- scopic → endoscopic
-    return re.sub(r'\s{2,}', ' ', t).strip()
+    t = re.sub(r'(?<=[a-z])-\s+(?=[a-z])', SOFT_JOIN, t)   # 跨行斷字，先標記
+    return re.sub(r'[ \t]{2,}', ' ', t).strip()
 
 
 def join_line(cur, text):
     """把一行接到累積字串上；中文不加空白，西文視情況補空白。"""
     if not cur:
         return text
+    # 行尾連字號：可能是被斷開的單字（adenocarci-noma），也可能是真的複合詞
+    # （high-quality）。這裡先標記，等整章的詞彙都在手上再判斷。
+    if re.search(r'[a-z]-$', cur) and re.match(r'^[a-z]', text):
+        return cur[:-1] + SOFT_JOIN + text
     if re.search(r'[A-Za-z0-9,;:.!?)\]]$', cur) and re.match(r'^[A-Za-z0-9(\[]', text):
         return cur + ' ' + text
     if re.search(r'[一-鿿]$', cur) or re.match(r'^[一-鿿]', text):
         return cur + text
     return cur + text
+
+
+SOFT_PAT = re.compile(r'([A-Za-z]+)' + SOFT_JOIN + r'([A-Za-z]+)')
+
+
+def resolve_hyphens(paras):
+    """用整章的詞彙決定每個斷行連字號要接起來還是保留。
+
+    單看一個位置分不出「adenocarci-noma」和「high-quality」，但整章看得出來：
+    接起來的形式在別處出現過，就是被斷開的字。這關係到搜尋——
+    使用者搜 adenocarcinoma 是找不到 adenocarci-noma 的。
+    """
+    body = ' '.join(p for p in paras if isinstance(p, str))
+    body += ' ' + ' '.join(p.get('text') or '' for p in paras if isinstance(p, dict))
+    # 建詞彙時要把「待決定」的那些整組排除，否則會自己證明自己
+    settled = SOFT_PAT.sub(' ', body)
+    vocab = {w.lower() for w in re.findall(r'[A-Za-z]{2,}', settled)}
+    hyphenated = {m.lower() for m in re.findall(r'[A-Za-z]{2,}-[A-Za-z]{2,}', settled)}
+
+    def fix(m):
+        a, b = m.group(1), m.group(2)
+        if (a + b).lower() in vocab:                       # 接起來別處有 → 是斷字
+            return a + b
+        if f'{a}-{b}'.lower() in hyphenated:               # 帶連字號別處有 → 是複合詞
+            return f'{a}-{b}'
+        if a.lower() in vocab and b.lower() in vocab:      # 兩邊都能單獨成字 → 多半是複合詞
+            return f'{a}-{b}'
+        return a + b                                       # 其餘一律接回去
+
+    def apply(t):
+        return SOFT_PAT.sub(fix, t).replace(SOFT_JOIN, '')
+
+    out = []
+    for p in paras:
+        if isinstance(p, str):
+            out.append(apply(p))
+        else:
+            if p.get('text'):
+                p['text'] = apply(p['text'])
+            out.append(p)
+    return out
 
 
 # ---------- 幾何 ----------
@@ -559,7 +607,7 @@ def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
     flush_text()
     emit_pending()
     doc.close()
-    return strip_chapter_decor(paras), n_img, n_tab
+    return resolve_hyphens(strip_chapter_decor(paras)), n_img, n_tab
 
 
 def strip_chapter_decor(paras):
