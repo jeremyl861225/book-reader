@@ -140,6 +140,8 @@ button { cursor: pointer; border: none; background: none; }
 .textbtn:before { content: "‹ "; }
 .view-body {
   flex: 1; overflow-y: auto;
+  /* 同 #reader-content：搜尋摘要與筆記引用一樣會夾到長網址 */
+  overflow-x: hidden; overflow-wrap: break-word;
   padding: 16px 16px calc(84px + var(--safe-bottom));
   max-width: 780px; width: 100%; margin: 0 auto;
 }
@@ -338,6 +340,12 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
   font-size: var(--reader-font); line-height: var(--reader-lh); color: var(--ink);
   max-width: 700px; margin: 0 auto; width: 100%;
   -webkit-user-select: text; user-select: text;
+  /* 內文夾雜整條網址、長化學名這類斷不了行的字串（例如第 126 章的
+     Acland 影片連結有 99 個字元），會把段落撐寬。overflow-y: auto 會讓
+     overflow-x 一併變成 auto，整篇文章就能左右捲，一捲每段開頭都被推出畫面。
+     讓長字串就地斷行，並且明確禁掉橫向捲動。 */
+  overflow-x: hidden;
+  overflow-wrap: break-word;
 }
 /* 靠左不對齊右緣：頁面只有一欄又窄，強制兩端對齊會在長單字之間拉出空隙 */
 #reader-content p { margin: 0 0 1.15em; text-align: left; }
