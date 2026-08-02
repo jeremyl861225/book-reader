@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>隨身書</title>
+<meta name="description" content="行動閱讀器：章節閱讀、螢光筆、筆記、全文搜尋">
+<meta name="theme-color" content="#4338CA">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="隨身書">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ============ 主要分頁 ============ -->
+<main id="views">
+
+  <!-- 目錄 -->
+  <section id="view-toc" class="view active">
+    <header class="topbar"><h1>📖 隨身書</h1></header>
+    <div class="view-body" id="toc-body"></div>
+  </section>
+
+  <!-- 搜尋 -->
+  <section id="view-search" class="view">
+    <header class="topbar">
+      <form id="search-form">
+        <input type="search" id="search-input" placeholder="搜尋全書內文…" autocomplete="off">
+      </form>
+    </header>
+    <div class="view-body" id="search-body">
+      <p class="hint">輸入關鍵字後按搜尋，結果會列出所有出現位置。</p>
+    </div>
+  </section>
+
+  <!-- 筆記總覽 -->
+  <section id="view-notes" class="view">
+    <header class="topbar">
+      <h1>筆記總覽</h1>
+      <div class="seg" id="notes-filter">
+        <button data-f="all" class="on">全部標記</button>
+        <button data-f="noted">有筆記</button>
+      </div>
+    </header>
+    <div class="view-body" id="notes-body"></div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="view-settings" class="view">
+    <header class="topbar"><h1>設定</h1></header>
+    <div class="view-body" id="settings-body">
+
+      <div class="card">
+        <h2>內容管理</h2>
+        <button id="btn-import" class="btn primary">📥 匯入章節 PDF</button>
+        <input type="file" id="file-input" accept=".pdf,application/pdf" multiple hidden>
+        <p class="hint">可一次選多個檔案。檔名格式建議：<br>
+          「第1章第2節 標題.pdf」或「1-2 標題.pdf」，<br>
+          會自動依章節編號歸類排序。內容只儲存在此裝置，不會上傳。</p>
+        <div id="import-progress" class="hint" hidden></div>
+        <button id="btn-sample" class="btn">🧪 載入範例內容（試用）</button>
+        <div id="manage-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>閱讀偏好</h2>
+        <label class="row">字體大小
+          <input type="range" id="font-size" min="14" max="26" step="1">
+          <span id="font-size-val"></span>
+        </label>
+        <label class="row">主題
+          <select id="theme-sel">
+            <option value="auto">跟隨系統</option>
+            <option value="light">淺色</option>
+            <option value="dark">深色</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="card">
+        <h2>備份</h2>
+        <button id="btn-export" class="btn">⬇️ 匯出資料（含內容與筆記）</button>
+        <button id="btn-restore" class="btn">⬆️ 還原備份</button>
+        <input type="file" id="restore-input" accept=".json,application/json" hidden>
+        <button id="btn-wipe" class="btn danger">🗑 清除所有資料</button>
+      </div>
+
+      <p class="hint center" id="app-version"></p>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 底部導覽 ============ -->
+<nav id="tabbar">
+  <button data-view="toc" class="on"><span>📖</span>目錄</button>
+  <button data-view="search"><span>🔍</span>搜尋</button>
+  <button data-view="notes"><span>🗂</span>筆記</button>
+  <button data-view="settings"><span>⚙️</span>設定</button>
+</nav>
+
+<!-- ============ 閱讀頁（覆蓋層） ============ -->
+<section id="reader" hidden>
+  <header class="topbar reader-bar">
+    <button id="reader-back" class="iconbtn" aria-label="返回">←</button>
+    <div class="reader-title">
+      <div id="reader-chapter" class="small"></div>
+      <div id="reader-section"></div>
+    </div>
+    <div class="reader-navbtns">
+      <button id="reader-prev" class="iconbtn" aria-label="上一節">‹</button>
+      <button id="reader-next" class="iconbtn" aria-label="下一節">›</button>
+    </div>
+  </header>
+  <article id="reader-content"></article>
+</section>
+
+<!-- 選字浮動工具列 -->
+<div id="hl-toolbar" hidden>
+  <button class="dot" data-color="yellow" aria-label="黃色螢光筆"></button>
+  <button class="dot" data-color="green" aria-label="綠色螢光筆"></button>
+  <button class="dot" data-color="blue" aria-label="藍色螢光筆"></button>
+  <button class="dot" data-color="pink" aria-label="粉色螢光筆"></button>
+  <button id="hl-note-btn">＋筆記</button>
+</div>
+
+<!-- 標記編輯底部面板 -->
+<div id="sheet-mask" hidden></div>
+<div id="hl-sheet" hidden>
+  <div class="sheet-quote" id="sheet-quote"></div>
+  <div class="sheet-colors">
+    <button class="dot" data-color="yellow"></button>
+    <button class="dot" data-color="green"></button>
+    <button class="dot" data-color="blue"></button>
+    <button class="dot" data-color="pink"></button>
+  </div>
+  <textarea id="sheet-note" placeholder="在這裡輸入筆記…" rows="4"></textarea>
+  <div class="sheet-actions">
+    <button id="sheet-delete" class="btn danger">刪除標記</button>
+    <button id="sheet-save" class="btn primary">儲存</button>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
