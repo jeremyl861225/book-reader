@@ -460,6 +460,31 @@ def caption_anchored_tables(page, body, lines, taken):
     return out
 
 
+def is_title_banner(page, region, body):
+    """章首標題的裝飾橫線會把書名圈成一塊墨跡區域，那不是插圖。
+
+    判別依據：真正的插圖一定有標籤（等於或小於內文字級），表格更是整片小字；
+    只有標題橫幅會「整塊都是比內文大的字、一個小字都沒有」。
+    誤判成插圖的話，章名會變成圖片，該章就沒有標題段了。
+    """
+    if body is None:
+        return False
+    big = small = 0
+    for b in page.get_text('dict', clip=region)['blocks']:
+        if b['type'] != 0:
+            continue
+        for l in b.get('lines', []):
+            for s in l['spans']:
+                n = len(s['text'].strip())
+                if not n:
+                    continue
+                if s['size'] > body + 0.5:
+                    big += n
+                else:
+                    small += n
+    return big >= 8 and small == 0
+
+
 def classify(page, region, lines):
     """看區域內、或緊鄰上方的標題，判斷這塊是表格還是插圖。"""
     inner = page.get_text(clip=region).strip()
@@ -522,7 +547,13 @@ def order_items(items, page_width):
         it['left'] = ((x0 + x1) / 2) < mid
 
     split = column_start_y(items)
-    if split is not None:
+    if split is None:
+        # 整頁沒有任何左右並排的內容＝這頁根本不是雙欄，純粹照 y 讀。
+        # 單欄書的章首頁會這樣（題詞偏左、章名偏右但上下錯開），
+        # 若硬套左右分欄，整個左欄會被排到右欄前面，題詞就跑到章名前面去了。
+        for it in items:
+            it['full'] = True
+    else:
         for it in items:
             if it['bbox'][3] <= split:      # 整個在雙欄開始之前
                 it['full'] = True
@@ -559,7 +590,8 @@ def page_items(page, body, running, use_regions):
         regions = ink + caption_anchored_tables(page, body, lines, ink)
         regions = merge_rects(regions, 0)
         regions = [r for r in regions
-                   if not (r.width > W * 0.95 and r.height > H * 0.9)]
+                   if not (r.width > W * 0.95 and r.height > H * 0.9)
+                   and not is_title_banner(page, r, body)]
 
     outline, consumed = extract_outline(lines, body, W)
 
