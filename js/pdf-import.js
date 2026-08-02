@@ -94,10 +94,10 @@ export async function extractPdfParas(arrayBuffer, onProgress) {
   return linesToParas(lines);
 }
 
-// 匯入多個 PDF 檔案 → 寫入 IndexedDB
-export async function importFiles(fileList, onStatus) {
+// 匯入多個 PDF 檔案 → 寫入指定的書
+export async function importFiles(fileList, bookId, onStatus) {
   const files = [...fileList];
-  const existing = await db.allSections();
+  const existing = await db.sectionsOf(bookId);
   let maxOrder = existing.reduce((m, s) => Math.max(m, s.order), 0);
   let ok = 0, failed = [];
 
@@ -113,6 +113,7 @@ export async function importFiles(fileList, onStatus) {
       const meta = parseFilename(f.name);
       await db.putSection({
         id: uid(),
+        bookId,
         chapter: meta.chapter,
         section: meta.section,
         title: meta.title,
@@ -127,13 +128,13 @@ export async function importFiles(fileList, onStatus) {
       failed.push(`${f.name}（${e.message || e}）`);
     }
   }
-  await resortSections();
+  await resortSections(bookId);
   return { ok, failed };
 }
 
-// 匯入內容包（.json，含文字與圖片的預轉換章節）
-export async function importPacks(files, onStatus) {
-  const existing = await db.allSections();
+// 匯入內容包（.json，含文字與圖片的預轉換章節）→ 寫入指定的書
+export async function importPacks(files, bookId, onStatus) {
+  const existing = await db.sectionsOf(bookId);
   let maxOrder = existing.reduce((m, s) => Math.max(m, s.order), 0);
   let ok = 0, failed = [];
   for (let i = 0; i < files.length; i++) {
@@ -147,6 +148,7 @@ export async function importPacks(files, onStatus) {
         if (!Array.isArray(s.paras)) continue;
         await db.putSection({
           id: uid(),
+          bookId,
           chapter: s.chapter ?? null,
           chapterTitle: s.chapterTitle ?? null,
           section: s.section ?? null,
@@ -163,13 +165,13 @@ export async function importPacks(files, onStatus) {
       failed.push(`${f.name}（${e.message || e}）`);
     }
   }
-  await resortSections();
+  await resortSections(bookId);
   return { ok, failed };
 }
 
-// 依「章 → 節 → 加入順序」重新排序
-export async function resortSections() {
-  const list = await db.allSections();
+// 依「章 → 節 → 加入順序」重新排序（限定一本書；不給 bookId 就全部重排）
+export async function resortSections(bookId) {
+  const list = bookId ? await db.sectionsOf(bookId) : await db.allSections();
   list.sort((a, b) => {
     const ca = a.chapter ?? 9999, cb = b.chapter ?? 9999;
     if (ca !== cb) return ca - cb;
@@ -183,7 +185,7 @@ export async function resortSections() {
 }
 
 // 範例內容（試用）
-export async function loadSample() {
+export async function loadSample(bookId) {
   const sample = [
     { chapter: 1, section: 1, title: '什麼是隨身書', paras: [
       '這是一段範例內文。你可以長按選取這段文字，試試看畫上螢光筆。選取後會出現顏色工具列，也可以直接加上筆記。',
@@ -197,10 +199,10 @@ export async function loadSample() {
       '在「搜尋」分頁輸入關鍵字，可以找到全書所有出現位置，點擊結果直接跳到該段落。',
       '在「筆記」分頁可以看到所有畫過的螢光筆與筆記，點擊即可回到原文位置。試著搜尋「螢光筆」三個字看看。' ] },
   ];
-  const existing = await db.allSections();
+  const existing = await db.sectionsOf(bookId);
   let order = existing.reduce((m, s) => Math.max(m, s.order), 0);
   for (const s of sample) {
-    await db.putSection({ id: uid(), ...s, order: ++order, src: 'sample', addedAt: Date.now() });
+    await db.putSection({ id: uid(), bookId, ...s, order: ++order, src: 'sample', addedAt: Date.now() });
   }
-  await resortSections();
+  await resortSections(bookId);
 }

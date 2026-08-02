@@ -16,9 +16,10 @@ let onCloseCb = null;
 export function isReaderOpen() { return !readerEl.hidden; }
 
 export async function openReader(sectionId, opts = {}) {
-  const sections = await db.allSections();
-  const section = sections.find(s => s.id === sectionId);
+  const section = await db.getSection(sectionId);
   if (!section) return;
+  // 上一節／下一節只在同一本書裡走
+  const sections = await db.sectionsOf(section.bookId);
   cur.section = section;
   cur.sections = sections;
   cur.highlights = await db.highlightsFor(sectionId);
@@ -51,12 +52,29 @@ function saveLastRead() {
 }
 
 /* ---------- 渲染 ---------- */
+// 圖說：「Figure 3.1.」「Table 2」「圖 5-1」開頭
+const CAPTION_RE = /^(Figure|Fig\.|Table|Chart|Box|圖|表)\s*[\dA-Z]+[.\-–:]/i;
+// 小標：短、沒有句尾標點、且是全大寫或標題式大小寫
+const HEADING_RE = /^[^。．.!?！？]{2,48}$/;
+function isHeading(t) {
+  if (!HEADING_RE.test(t)) return false;
+  const letters = t.replace(/[^A-Za-z]/g, '');
+  if (letters.length >= 3 && letters === letters.toUpperCase()) return true;
+  return false;
+}
+
+function paraClass(text) {
+  if (CAPTION_RE.test(text)) return 'para caption';
+  if (isHeading(text)) return 'para heading';
+  return 'para';
+}
+
 function renderContent() {
   const frag = document.createDocumentFragment();
   cur.section.paras.forEach((item, i) => {
     if (typeof item === 'string') {
       const p = document.createElement('p');
-      p.className = 'para';
+      p.className = paraClass(item);
       p.dataset.i = i;
       renderPara(p, item, i);
       frag.appendChild(p);

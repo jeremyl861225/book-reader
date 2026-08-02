@@ -1,52 +1,67 @@
-// 主程式：分頁導覽、目錄、搜尋、筆記總覽、設定
+// 主程式：書架、目錄、搜尋、筆記總覽、設定
 import { db, uid } from './db.js';
 import { importFiles, importPacks, loadSample, resortSections } from './pdf-import.js';
 import { initReader, openReader, toast } from './reader.js';
-import { syncCfg, saveSyncCfg, syncLibrary } from './sync.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
-const esc = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v2.0.0';
+
+// 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
+const BOOK_FILE = 'book-reader-book';
+const PART_BYTES = 20 * 1024 * 1024;  // 單份上限，避免手機解析過大的 JSON
+
+let currentBookId = localStorage.getItem('currentBook') || null;
 
 /* ---------- 分頁切換 ---------- */
 function switchView(name) {
   $$('.view').forEach(v => v.classList.toggle('active', v.id === `view-${name}`));
-  $$('#tabbar button').forEach(b => b.classList.toggle('on', b.dataset.view === name));
+  const tabFor = name === 'toc' ? 'shelf' : name;
+  $$('#tabbar button').forEach(b => b.classList.toggle('on', b.dataset.view === tabFor));
+  if (name === 'shelf') renderShelf();
   if (name === 'toc') renderToc();
   if (name === 'notes') renderNotes();
-  if (name === 'settings') renderManageList();
+  if (name === 'settings') renderSettings();
 }
 $$('#tabbar button').forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
+$('#toc-back').addEventListener('click', () => switchView('shelf'));
 
-/* ---------- 目錄 ---------- */
-const openChapters = new Set(JSON.parse(localStorage.getItem('openChapters') || '[]'));
-
+/* ---------- 共用文字 ---------- */
 function sectionLabel(s) {
   if (s.section == null) return s.title;
-  // 有英文章標題（如 SECTION I）時用「135. 標題」，否則用「第135節」
   return s.chapterTitle ? `${s.section}. ${s.title}` : `第${s.section}節　${s.title}`;
 }
-function chapterLabel(key) {
-  return key === 'null' ? '未分章' : `第${key}章`;
-}
 function chapterLabelFor(s) {
-  return s.chapterTitle || chapterLabel(String(s.chapter));
+  return s.chapterTitle || (s.chapter == null ? '未分章' : `第${s.chapter}章`);
 }
 
-async function renderToc() {
-  const body = $('#toc-body');
-  const sections = await db.allSections();
-  if (!sections.length) {
+/* ---------- 書架 ---------- */
+async function renderShelf() {
+  const body = $('#shelf-body');
+  const books = await db.allBooks();
+  if (!books.length) {
     body.innerHTML = `
       <div class="empty-state">
-        <div class="big">📚</div>
-        <p>還沒有內容。<br>到「設定」匯入章節 PDF，<br>或先載入範例內容試用看看。</p>
-        <button class="btn primary" id="empty-import">前往匯入</button>
+        <p>書架還是空的。<br>到「設定」匯入書籍檔或章節，<br>也可以先載入範例內容試用。</p>
+        <button class="btn primary" id="empty-import">前往設定</button>
       </div>`;
     $('#empty-import').onclick = () => switchView('settings');
     return;
+  }
+
+  const [allSections, allHls] = await Promise.all([db.allSections(), db.allHighlights()]);
+  const secOf = new Map();
+  for (const s of allSections) {
+    if (!secOf.has(s.bookId)) secOf.set(s.bookId, []);
+    secOf.get(s.bookId).push(s);
+  }
+  const bookOfSection = new Map(allSections.map(s => [s.id, s.bookId]));
+  const hlCount = new Map();
+  for (const h of allHls) {
+    const b = bookOfSection.get(h.sectionId);
+    if (b) hlCount.set(b, (hlCount.get(b) || 0) + 1);
   }
 
   const frag = document.createDocumentFragment();
@@ -54,17 +69,53 @@ async function renderToc() {
   // 繼續閱讀
   try {
     const last = JSON.parse(localStorage.getItem('lastRead') || 'null');
-    const lastSec = last && sections.find(s => s.id === last.sectionId);
+    const lastSec = last && allSections.find(s => s.id === last.sectionId);
     if (lastSec) {
       const c = document.createElement('button');
       c.className = 'continue-card';
-      c.innerHTML = `▶ 繼續閱讀：<b>${esc(sectionLabel(lastSec))}</b>`;
-      c.onclick = () => openReader(lastSec.id, { onClose: renderToc });
+      c.innerHTML = `繼續閱讀　<b>${esc(sectionLabel(lastSec))}</b>`;
+      c.onclick = () => openReader(lastSec.id, { onClose: renderShelf });
       frag.appendChild(c);
     }
   } catch {}
 
-  // 章 → 節
+  for (const b of books) {
+    const secs = secOf.get(b.id) || [];
+    const n = hlCount.get(b.id) || 0;
+    const btn = document.createElement('button');
+    btn.className = 'book-item';
+    btn.innerHTML =
+      `<span class="bt">${esc(b.title)}</span>` +
+      `<span class="bm">${secs.length} 個章節${n ? `・${n} 個標記` : ''}</span>`;
+    btn.onclick = () => openBook(b.id);
+    frag.appendChild(btn);
+  }
+  body.replaceChildren(frag);
+}
+
+function openBook(bookId) {
+  currentBookId = bookId;
+  localStorage.setItem('currentBook', bookId);
+  switchView('toc');
+}
+
+/* ---------- 一本書的目錄 ---------- */
+const openChapters = new Set(JSON.parse(localStorage.getItem('openChapters') || '[]'));
+
+async function renderToc() {
+  const body = $('#toc-body');
+  const book = currentBookId ? await db.getBook(currentBookId) : null;
+  if (!book) { switchView('shelf'); return; }
+  $('#toc-title').textContent = book.title;
+
+  const sections = await db.sectionsOf(book.id);
+  if (!sections.length) {
+    body.innerHTML = `<div class="empty-state"><p>這本書還沒有內容。<br>到「設定」把章節匯入這本書。</p>
+      <button class="btn primary" id="empty-import2">前往設定</button></div>`;
+    $('#empty-import2').onclick = () => switchView('settings');
+    return;
+  }
+
   const byChapter = new Map();
   for (const s of sections) {
     const key = String(s.chapter);
@@ -74,15 +125,17 @@ async function renderToc() {
   const hlCount = new Map();
   (await db.allHighlights()).forEach(h => hlCount.set(h.sectionId, (hlCount.get(h.sectionId) || 0) + 1));
 
+  const frag = document.createDocumentFragment();
   for (const [key, secs] of byChapter) {
+    const okey = `${book.id}:${key}`;
     const block = document.createElement('div');
-    block.className = 'chapter-block' + (openChapters.has(key) || byChapter.size === 1 ? ' open' : '');
+    block.className = 'chapter-block' + (openChapters.has(okey) || byChapter.size === 1 ? ' open' : '');
     const head = document.createElement('button');
     head.className = 'chapter-head';
     head.innerHTML = `<span>${esc(chapterLabelFor(secs[0]))}</span><span class="chev">›</span>`;
     head.onclick = () => {
       block.classList.toggle('open');
-      block.classList.contains('open') ? openChapters.add(key) : openChapters.delete(key);
+      block.classList.contains('open') ? openChapters.add(okey) : openChapters.delete(okey);
       localStorage.setItem('openChapters', JSON.stringify([...openChapters]));
     };
     const list = document.createElement('div');
@@ -91,7 +144,7 @@ async function renderToc() {
       const item = document.createElement('button');
       item.className = 'section-item';
       const n = hlCount.get(s.id);
-      item.innerHTML = `<span>${esc(sectionLabel(s))}</span><span class="meta">${n ? `🖍${n}` : ''}</span>`;
+      item.innerHTML = `<span>${esc(sectionLabel(s))}</span><span class="meta">${n ? `${n} 標記` : ''}</span>`;
       item.onclick = () => openReader(s.id, { onClose: renderToc });
       list.appendChild(item);
     }
@@ -101,14 +154,16 @@ async function renderToc() {
   body.replaceChildren(frag);
 }
 
-/* ---------- 搜尋 ---------- */
+/* ---------- 搜尋（跨整個書架） ---------- */
 $('#search-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   $('#search-input').blur();
   const q = $('#search-input').value.trim();
   const body = $('#search-body');
   if (!q) return;
-  const sections = await db.allSections();
+  const [sections, books] = await Promise.all([db.allSections(), db.allBooks()]);
+  const bookTitle = new Map(books.map(b => [b.id, b.title]));
+  const multi = books.length > 1;
   const results = [];
   const lower = q.toLowerCase();
   for (const s of sections) {
@@ -135,14 +190,16 @@ $('#search-form').addEventListener('submit', async (e) => {
   frag.appendChild(count);
   for (const r of results) {
     const text = r.section.paras[r.paraIdx];
-    const s = Math.max(0, r.at - 30);
+    const s0 = Math.max(0, r.at - 30);
     const e2 = Math.min(text.length, r.at + q.length + 40);
-    const snippet = (s > 0 ? '…' : '') +
-      esc(text.slice(s, r.at)) + `<mark>${esc(text.slice(r.at, r.at + q.length))}</mark>` +
+    const snippet = (s0 > 0 ? '…' : '') +
+      esc(text.slice(s0, r.at)) + `<mark>${esc(text.slice(r.at, r.at + q.length))}</mark>` +
       esc(text.slice(r.at + q.length, e2)) + (e2 < text.length ? '…' : '');
     const btn = document.createElement('button');
     btn.className = 'result-item';
-    btn.innerHTML = `<div class="loc">${esc(chapterLabelFor(r.section))}・${esc(sectionLabel(r.section))}</div>${snippet}`;
+    const where = (multi ? `${esc(bookTitle.get(r.section.bookId) || '')}・` : '') +
+      `${esc(chapterLabelFor(r.section))}・${esc(sectionLabel(r.section))}`;
+    btn.innerHTML = `<div class="loc">${where}</div>${snippet}`;
     btn.onclick = () => openReader(r.section.id, { scrollToPara: r.paraIdx });
     frag.appendChild(btn);
   }
@@ -161,10 +218,11 @@ $('#notes-filter').addEventListener('click', (e) => {
 
 async function renderNotes() {
   const body = $('#notes-body');
-  const [hls, sections] = await Promise.all([db.allHighlights(), db.allSections()]);
+  const [hls, sections, books] = await Promise.all([db.allHighlights(), db.allSections(), db.allBooks()]);
   const secMap = new Map(sections.map(s => [s.id, s]));
+  const bookTitle = new Map(books.map(b => [b.id, b.title]));
+  const multi = books.length > 1;
 
-  // 以 groupId 聚合（跨段落的同一次標記）
   const groups = new Map();
   for (const h of hls.sort((a, b) => a.paraIdx - b.paraIdx || a.start - b.start)) {
     if (!groups.has(h.groupId)) groups.set(h.groupId, { ...h, quote: h.quote });
@@ -184,9 +242,11 @@ async function renderNotes() {
     if (!sec) continue;
     const btn = document.createElement('button');
     btn.className = 'result-item';
+    const where = (multi ? `${esc(bookTitle.get(sec.bookId) || '')}・` : '') +
+      `${esc(chapterLabelFor(sec))}・${esc(sectionLabel(sec))}`;
     btn.innerHTML =
-      `<div class="loc">${esc(chapterLabelFor(sec))}・${esc(sectionLabel(sec))}</div>` +
-      `<div class="note-quote" style="border-color:${colorVar[g.color] || colorVar.yellow};background:${colorVar[g.color] || colorVar.yellow}22">${esc(g.quote)}</div>` +
+      `<div class="loc">${where}</div>` +
+      `<div class="note-quote" style="border-color:${colorVar[g.color] || colorVar.yellow};background:${colorVar[g.color] || colorVar.yellow}55">${esc(g.quote)}</div>` +
       (g.note ? `<div class="note-text">${esc(g.note)}</div>` : '');
     btn.onclick = () => openReader(g.sectionId, { scrollToHl: g.id, onClose: renderNotes });
     frag.appendChild(btn);
@@ -194,70 +254,121 @@ async function renderNotes() {
   body.replaceChildren(frag);
 }
 
-/* ---------- 設定：匯入 ---------- */
-$('#btn-import').addEventListener('click', () => $('#file-input').click());
+/* ---------- 設定 ---------- */
+async function renderSettings() {
+  await fillBookSelect();
+  await renderBookList();
+}
+
+async function fillBookSelect() {
+  const sel = $('#import-target');
+  const books = await db.allBooks();
+  const keep = sel.value;
+  sel.innerHTML = books.map(b => `<option value="${esc(b.id)}">${esc(b.title)}</option>`).join('')
+    + '<option value="__new__">＋ 新增一本書…</option>';
+  if (books.some(b => b.id === keep)) sel.value = keep;
+  else if (books.some(b => b.id === currentBookId)) sel.value = currentBookId;
+}
+
+// 取得匯入目標；選「新增」時問書名並建立
+async function resolveTargetBook() {
+  const sel = $('#import-target');
+  if (sel.value && sel.value !== '__new__') return sel.value;
+  const title = prompt('新書名稱：', '');
+  if (title === null) return null;
+  const id = await createBook(title.trim() || '未命名的書');
+  await fillBookSelect();
+  sel.value = id;
+  return id;
+}
+
+async function createBook(title, key) {
+  const books = await db.allBooks();
+  const id = 'b' + uid();
+  await db.putBook({
+    id, key: key || null, title,
+    order: books.reduce((m, b) => Math.max(m, b.order || 0), 0) + 1,
+    addedAt: Date.now(),
+  });
+  return id;
+}
+
+/* ----- 匯入章節（PDF / 內容包） ----- */
+$('#btn-import').addEventListener('click', async () => {
+  const bookId = await resolveTargetBook();
+  if (!bookId) return;
+  $('#file-input').dataset.book = bookId;
+  $('#file-input').click();
+});
 $('#file-input').addEventListener('change', async (e) => {
   const files = [...(e.target.files || [])];
-  if (!files.length) return;
+  const bookId = e.target.dataset.book;
+  if (!files.length || !bookId) return;
   const prog = $('#import-progress');
   prog.hidden = false;
   const pdfs = files.filter(f => /\.pdf$/i.test(f.name));
   const packs = files.filter(f => /\.json$/i.test(f.name));
   let ok = 0, failed = [];
   if (pdfs.length) {
-    const r = await importFiles(pdfs, (msg) => { prog.textContent = msg; });
+    const r = await importFiles(pdfs, bookId, (msg) => { prog.textContent = msg; });
     ok += r.ok; failed.push(...r.failed);
   }
   if (packs.length) {
-    const r = await importPacks(packs, (msg) => { prog.textContent = msg; });
+    const r = await importPacks(packs, bookId, (msg) => { prog.textContent = msg; });
     ok += r.ok; failed.push(...r.failed);
   }
   prog.textContent = `完成：成功 ${ok} 個章節` + (failed.length ? `，失敗 ${failed.length} 個：${failed.join('、')}` : '');
   e.target.value = '';
-  renderManageList();
-  if (ok) { toast(`已匯入 ${ok} 個章節`); switchView('toc'); }
+  await renderBookList();
+  if (ok) { toast(`已匯入 ${ok} 個章節`); openBook(bookId); }
 });
 
 $('#btn-sample').addEventListener('click', async () => {
-  await loadSample();
+  const bookId = await resolveTargetBook();
+  if (!bookId) return;
+  await loadSample(bookId);
   toast('已載入範例內容');
-  switchView('toc');
+  openBook(bookId);
 });
 
-/* ---------- 設定：章節管理 ---------- */
-async function renderManageList() {
-  const wrap = $('#manage-list');
-  const sections = await db.allSections();
-  if (!sections.length) { wrap.innerHTML = ''; return; }
+/* ----- 書籍管理 ----- */
+$('#btn-new-book').addEventListener('click', async () => {
+  const title = prompt('新書名稱：', '');
+  if (title === null) return;
+  await createBook(title.trim() || '未命名的書');
+  await renderSettings();
+  toast('已新增');
+});
+
+async function renderBookList() {
+  const wrap = $('#book-list');
+  const books = await db.allBooks();
+  if (!books.length) { wrap.innerHTML = '<p class="hint">還沒有任何書。</p>'; return; }
+  const all = await db.allSections();
   const frag = document.createDocumentFragment();
-  const h = document.createElement('h2');
-  h.textContent = `已匯入 ${sections.length} 個章節`;
-  h.style.marginTop = '14px';
-  frag.appendChild(h);
-  for (const s of sections) {
+  for (const b of books) {
+    const n = all.filter(s => s.bookId === b.id).length;
     const row = document.createElement('div');
     row.className = 'manage-item';
     row.innerHTML =
-      `<span class="t">${esc(chapterLabelFor(s))}・${esc(sectionLabel(s))}</span>` +
-      `<button data-act="edit">✏️</button><button data-act="del">🗑</button>`;
-    row.querySelector('[data-act="edit"]').onclick = async () => {
-      const title = prompt('節標題：', s.title);
-      if (title === null) return;
-      const ch = prompt('章編號（數字，留空 = 未分章）：', s.chapter ?? '');
-      const se = prompt('節編號（數字，留空 = 無）：', s.section ?? '');
-      s.title = title.trim() || s.title;
-      s.chapter = ch.trim() === '' ? null : parseInt(ch, 10);
-      s.section = se.trim() === '' ? null : parseInt(se, 10);
-      await db.putSection(s);
-      await resortSections();
-      renderManageList();
+      `<span class="t">${esc(b.title)}<small>${n} 章</small></span>` +
+      `<button data-act="export">匯出</button>` +
+      `<button data-act="rename">改名</button>` +
+      `<button data-act="del">刪除</button>`;
+    row.querySelector('[data-act="export"]').onclick = () => exportBook(b);
+    row.querySelector('[data-act="rename"]').onclick = async () => {
+      const t = prompt('書名：', b.title);
+      if (t === null) return;
+      b.title = t.trim() || b.title;
+      await db.putBook(b);
+      await renderSettings();
     };
     row.querySelector('[data-act="del"]').onclick = async () => {
-      if (!confirm(`刪除「${s.title}」？其中的螢光筆與筆記也會一併刪除。`)) return;
-      await db.deleteHighlightsFor(s.id);
-      await db.deleteSection(s.id);
-      await resortSections();
-      renderManageList();
+      if (!confirm(`刪除《${b.title}》？這本書的全部章節、螢光筆與筆記都會一併刪除。`)) return;
+      if (!confirm('再次確認：此動作無法復原。建議先「匯出」保存。')) return;
+      await db.deleteBook(b.id);
+      if (currentBookId === b.id) { currentBookId = null; localStorage.removeItem('currentBook'); }
+      await renderSettings();
       toast('已刪除');
     };
     frag.appendChild(row);
@@ -265,38 +376,130 @@ async function renderManageList() {
   wrap.replaceChildren(frag);
 }
 
-/* ---------- 設定：書庫同步 ---------- */
-function initSyncUI() {
-  const c = syncCfg();
-  $('#sync-repo').value = c.repo || '';
-  $('#sync-token').value = c.token || '';
-  const save = () => {
-    const c2 = syncCfg();
-    c2.repo = $('#sync-repo').value.trim();
-    c2.token = $('#sync-token').value.trim();
-    saveSyncCfg(c2);
-  };
-  $('#sync-repo').addEventListener('change', save);
-  $('#sync-token').addEventListener('change', save);
-  $('#btn-sync').addEventListener('click', async () => {
-    save();
-    const st = $('#sync-status');
-    const btn = $('#btn-sync');
-    btn.disabled = true;
-    try {
-      const r = await syncLibrary((msg) => { st.textContent = msg; });
-      st.textContent = `同步完成：新增/更新 ${r.added} 節，已是最新 ${r.skipped} 包`;
-      if (r.added) { toast(`已同步 ${r.added} 個章節`); switchView('toc'); }
-      else toast('書庫已是最新');
-    } catch (e) {
-      st.textContent = `同步失敗：${e.message || e}`;
-    } finally {
-      btn.disabled = false;
-    }
-  });
+/* ----- 匯出一本書（內容＋螢光筆＋筆記） ----- */
+function download(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
-/* ---------- 設定：偏好 ---------- */
+async function exportBook(book) {
+  const prog = $('#book-progress');
+  prog.hidden = false;
+  prog.textContent = '準備匯出…';
+
+  const sections = await db.sectionsOf(book.id);
+  if (!sections.length) { prog.textContent = '這本書沒有內容可匯出。'; return; }
+
+  const hlBySection = new Map();
+  for (const s of sections) {
+    const hs = await db.highlightsFor(s.id);
+    if (hs.length) hlBySection.set(s.id, hs);
+  }
+
+  // 依大小切份，避免單一檔案過大導致手機匯入時解析失敗
+  const parts = [];
+  let cur = [], curBytes = 0;
+  for (const s of sections) {
+    const bytes = JSON.stringify(s).length;
+    if (cur.length && curBytes + bytes > PART_BYTES) { parts.push(cur); cur = []; curBytes = 0; }
+    cur.push(s); curBytes += bytes;
+  }
+  if (cur.length) parts.push(cur);
+
+  const key = book.key || book.id;
+  const safe = book.title.replace(/[\\/:*?"<>|]/g, '-').slice(0, 60);
+  for (let i = 0; i < parts.length; i++) {
+    prog.textContent = `匯出第 ${i + 1}/${parts.length} 份…`;
+    const secs = parts[i];
+    const hls = secs.flatMap(s => hlBySection.get(s.id) || []);
+    download({
+      app: BOOK_FILE, version: 1, exportedAt: new Date().toISOString(),
+      book: { key, title: book.title },
+      part: i + 1, parts: parts.length,
+      sections: secs, highlights: hls,
+    }, parts.length === 1 ? `${safe}.book.json` : `${safe}-${i + 1}of${parts.length}.book.json`);
+    await new Promise(r => setTimeout(r, 600)); // 讓瀏覽器逐份存檔
+  }
+  prog.textContent = `已匯出 ${parts.length} 個檔案，共 ${sections.length} 章。可用 AirDrop 或雲端硬碟傳到另一台裝置匯入。`;
+  toast('匯出完成');
+}
+
+/* ----- 匯入書籍檔 ----- */
+$('#btn-import-book').addEventListener('click', () => $('#book-input').click());
+$('#book-input').addEventListener('change', async (e) => {
+  const files = [...(e.target.files || [])];
+  e.target.value = '';
+  if (!files.length) return;
+  const prog = $('#book-progress');
+  prog.hidden = false;
+  try {
+    const n = await importBookFiles(files, (m) => { prog.textContent = m; });
+    prog.textContent = `匯入完成：${n.books} 本書、${n.sections} 個章節、${n.highlights} 個標記。`;
+    toast('匯入完成');
+    await renderSettings();
+    switchView('shelf');
+  } catch (err) {
+    prog.textContent = `匯入失敗：${err.message || err}`;
+  }
+});
+
+async function importBookFiles(files, onStatus) {
+  // 先全部讀進來，依 book.key 分組（多份檔案屬於同一本書）
+  const groups = new Map();
+  for (let i = 0; i < files.length; i++) {
+    onStatus?.(`讀取 ${i + 1}/${files.length}：${files[i].name}`);
+    let d;
+    try { d = JSON.parse(await files[i].text()); }
+    catch { throw new Error(`${files[i].name} 不是有效的 JSON`); }
+    if (d.app !== BOOK_FILE || !Array.isArray(d.sections)) {
+      throw new Error(`${files[i].name} 不是書籍檔（請改用「匯入章節」載入內容包）`);
+    }
+    const key = d.book?.key || d.book?.title || files[i].name;
+    if (!groups.has(key)) groups.set(key, { title: d.book?.title || '未命名的書', sections: [], highlights: [] });
+    const g = groups.get(key);
+    g.sections.push(...d.sections);
+    g.highlights.push(...(d.highlights || []));
+  }
+
+  let nBooks = 0, nSecs = 0, nHls = 0;
+  const existing = await db.allBooks();
+  for (const [key, g] of groups) {
+    // 同一把 key 已存在就併進去，否則開新書
+    let book = existing.find(b => b.key && b.key === key);
+    if (!book) {
+      const id = await createBook(g.title, key);
+      book = await db.getBook(id);
+      nBooks++;
+    }
+    let maxOrder = (await db.sectionsOf(book.id)).reduce((m, s) => Math.max(m, s.order || 0), 0);
+    const idMap = new Map();
+    let done = 0;
+    for (const s of g.sections) {
+      if (!Array.isArray(s.paras)) continue;
+      const newId = uid();
+      idMap.set(s.id, newId);
+      await db.putSection({
+        ...s, id: newId, bookId: book.id, order: ++maxOrder, addedAt: Date.now(),
+      });
+      nSecs++;
+      if (++done % 20 === 0) onStatus?.(`寫入《${book.title}》${done}/${g.sections.length} 章…`);
+    }
+    for (const h of g.highlights) {
+      const sid = idMap.get(h.sectionId);
+      if (!sid) continue;  // 對應不到章節的標記直接略過
+      await db.putHighlight({ ...h, id: uid(), sectionId: sid });
+      nHls++;
+    }
+    await resortSections(book.id);
+  }
+  return { books: nBooks, sections: nSecs, highlights: nHls };
+}
+
+/* ---------- 偏好 ---------- */
 function applyPrefs() {
   const size = localStorage.getItem('fontSize') || '18';
   document.documentElement.style.setProperty('--reader-font', `${size}px`);
@@ -316,54 +519,58 @@ $('#theme-sel').addEventListener('change', (e) => {
   applyPrefs();
 });
 
-/* ---------- 設定：備份 ---------- */
+/* ---------- 整機備份 ---------- */
 $('#btn-export').addEventListener('click', async () => {
-  const data = {
-    app: 'book-reader', version: 1, exportedAt: new Date().toISOString(),
+  download({
+    app: 'book-reader', version: 2, exportedAt: new Date().toISOString(),
+    books: await db.allBooks(),
     sections: await db.allSections(),
     highlights: await db.allHighlights(),
-  };
-  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `book-reader-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  }, `book-reader-backup-${new Date().toISOString().slice(0, 10)}.json`);
 });
 
 $('#btn-restore').addEventListener('click', () => $('#restore-input').click());
 $('#restore-input').addEventListener('change', async (e) => {
   const f = e.target.files?.[0];
+  e.target.value = '';
   if (!f) return;
   try {
     const data = JSON.parse(await f.text());
     if (data.app !== 'book-reader' || !Array.isArray(data.sections)) throw new Error('格式不符');
-    if (!confirm(`還原備份會覆蓋目前資料（${data.sections.length} 個章節、${data.highlights?.length || 0} 筆標記），確定？`)) return;
+    if (!confirm(`還原備份會覆蓋目前全部資料（${data.sections.length} 個章節、${data.highlights?.length || 0} 個標記），確定？`)) return;
     await db.wipe();
+    // 舊版備份沒有 books，補一本預設書收容
+    let books = data.books;
+    if (!Array.isArray(books) || !books.length) {
+      const id = 'b' + uid();
+      books = [{ id, title: '我的書', order: 1, addedAt: Date.now() }];
+      data.sections.forEach(s => { s.bookId = id; });
+    }
+    for (const b of books) await db.putBook(b);
     for (const s of data.sections) await db.putSection(s);
     for (const h of (data.highlights || [])) await db.putHighlight(h);
     toast('還原完成');
-    switchView('toc');
+    switchView('shelf');
   } catch (err) {
     alert(`還原失敗：${err.message || err}`);
   }
-  e.target.value = '';
 });
 
 $('#btn-wipe').addEventListener('click', async () => {
-  if (!confirm('確定要清除所有內容、螢光筆與筆記嗎？此動作無法復原。')) return;
+  if (!confirm('確定要清除書架上所有書籍、螢光筆與筆記嗎？此動作無法復原。')) return;
   if (!confirm('再次確認：真的要全部清除？建議先匯出備份。')) return;
   await db.wipe();
   localStorage.removeItem('lastRead');
+  localStorage.removeItem('currentBook');
+  currentBookId = null;
   toast('已清除');
-  switchView('toc');
+  switchView('shelf');
 });
 
 /* ---------- 啟動 ---------- */
 applyPrefs();
-initSyncUI();
 initReader();
-renderToc();
+renderShelf();
 $('#app-version').textContent = `隨身書 ${APP_VERSION}・內容僅儲存於此裝置`;
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

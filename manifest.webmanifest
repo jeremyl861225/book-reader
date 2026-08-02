@@ -1,14 +1,14 @@
 {
   "name": "隨身書",
   "short_name": "隨身書",
-  "description": "行動閱讀器：章節閱讀、螢光筆、筆記、全文搜尋",
+  "description": "行動書架：多書收藏、章節閱讀、螢光筆、筆記、全文搜尋",
   "lang": "zh-Hant",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#f7f7f8",
-  "theme_color": "#4338CA",
+  "background_color": "#F3EDE0",
+  "theme_color": "#F3EDE0",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
