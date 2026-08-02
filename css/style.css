@@ -433,11 +433,20 @@ mark.has-note { border-bottom: 2px dotted var(--accent); }
 @keyframes flashbg { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
 
 /* ---------- 螢光筆工具列 ---------- */
+/* iOS 自己的選字選單（拷貝／查詢／翻譯…）是系統畫的，永遠蓋在網頁之上，
+   z-index 壓不過它；而且它一定貼著選取範圍。所以工具列不再跟著選取範圍跑，
+   改停在畫面上緣或下緣——由 JS 挑離選取範圍比較遠的那一側。 */
 #hl-toolbar {
   position: fixed; z-index: 60; display: flex; align-items: center; gap: 10px;
+  /* width: max-content 不可省：只給 left 時可用寬度只剩畫面的一半，
+     ＋筆記 會被擠成兩行 */
+  left: 50%; transform: translateX(-50%);
+  width: max-content; max-width: calc(100vw - 24px);
   background: var(--card); border: 1px solid var(--line); border-radius: 999px;
   padding: 8px 12px; box-shadow: var(--sh-2);
 }
+#hl-toolbar.dock-bottom { bottom: calc(18px + var(--safe-bottom)); top: auto; }
+#hl-toolbar.dock-top { top: var(--hl-top, 96px); bottom: auto; }
 .dot {
   width: 26px; height: 26px; border-radius: 50%; padding: 0;
   border: 1px solid rgba(78, 64, 40, .18);
@@ -449,7 +458,7 @@ mark.has-note { border-bottom: 2px dotted var(--accent); }
 .dot.on { outline: 2px solid var(--accent); outline-offset: 2px; }
 #hl-note-btn {
   background: var(--accent); color: #FFFCF6; border-radius: 999px;
-  padding: 7px 14px; font-size: 13.5px; font-weight: 600;
+  padding: 7px 14px; font-size: 13.5px; font-weight: 600; white-space: nowrap;
 }
 
 /* ---------- 底部面板 ---------- */

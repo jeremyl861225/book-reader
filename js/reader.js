@@ -41,19 +41,60 @@ export async function openReader(sectionId, opts = {}) {
 
   if (opts.scrollToHl) scrollToHighlight(opts.scrollToHl);
   else if (opts.scrollToPara != null) scrollToPara(opts.scrollToPara, opts.flashQuery);
-  saveLastRead();
+  else if (opts.restore) restoreMark(opts.restore);
+  saveProgress(opts.restore);
 }
 
 export function closeReader() {
   hideToolbar(); closeSheet();
+  saveProgress();                // 先記位置再清空內容，否則量不到捲到哪
   readerEl.hidden = true;
   contentEl.replaceChildren();   // 放掉 <img> 對圖檔的參照
   cur.figs = new Map();
   if (onCloseCb) onCloseCb();
 }
 
-function saveLastRead() {
-  localStorage.setItem('lastRead', JSON.stringify({ sectionId: cur.section.id, at: Date.now() }));
+/* ---------- 記住讀到哪 ----------
+   不存 scrollTop：圖片是 lazy 的，載入前後版面高度會變，像素位置對不回去。
+   改記「畫面最上緣是第幾個區塊、在該區塊裡捲過幾成」，對高度變化免疫。 */
+function currentMark() {
+  const top = contentEl.scrollTop;
+  for (const el of contentEl.children) {
+    if (el.dataset.i == null) continue;
+    const elTop = el.offsetTop - contentEl.offsetTop;
+    if (elTop + el.offsetHeight > top + 1) {
+      return { i: el.dataset.i, r: Math.max(0, Math.min(1, (top - elTop) / (el.offsetHeight || 1))) };
+    }
+  }
+  return null;
+}
+
+function saveProgress(mark) {
+  if (!cur.section) return;
+  const m = mark || currentMark() || {};
+  localStorage.setItem('lastRead', JSON.stringify({
+    sectionId: cur.section.id, i: m.i ?? null, r: m.r ?? 0, at: Date.now(),
+  }));
+}
+
+function restoreMark(mark) {
+  if (mark?.i == null) return;
+  const align = () => {
+    const el = contentEl.querySelector(`[data-i="${mark.i}"]`);
+    if (!el) return false;
+    contentEl.scrollTop = el.offsetTop - contentEl.offsetTop + (mark.r || 0) * el.offsetHeight;
+    return true;
+  };
+  // 立刻對一次（此時版面已經算得出來），不要等 rAF——頁面若在背景恢復，
+  // rAF 可能一直不執行，位置就永遠回不去。
+  if (!align()) return;
+  // 上方的圖陸續載入會把版面撐開，位置會往下跑——短時間內持續校正，
+  // 使用者一動手就停手，免得跟他搶捲軸。
+  let n = 0;
+  const timer = setInterval(() => { if (!align() || ++n > 16) clearInterval(timer); }, 250);
+  const stop = () => clearInterval(timer);
+  contentEl.addEventListener('touchstart', stop, { once: true, passive: true });
+  contentEl.addEventListener('wheel', stop, { once: true, passive: true });
 }
 
 /* ---------- 段落分類 ---------- */
@@ -335,14 +376,19 @@ function getSelectionRanges() {
 function showToolbarFor(selInfo) {
   pendingSel = selInfo;
   toolbar.hidden = false;
-  const tw = toolbar.offsetWidth, th = toolbar.offsetHeight;
+  // iOS 的選字選單是系統畫的，蓋在網頁之上、z-index 壓不過，而且一定緊貼選取範圍。
+  // 工具列因此不跟著選取範圍走，改停在上下緣中「離選取範圍比較遠」的那一側。
   const r = selInfo.rect;
-  let top = r.top - th - 12;
-  if (top < 60) top = r.bottom + 12;
-  let left = r.left + r.width / 2 - tw / 2;
-  left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
-  toolbar.style.top = `${top}px`;
-  toolbar.style.left = `${left}px`;
+  const spaceAbove = Math.max(0, r.top);
+  const spaceBelow = Math.max(0, window.innerHeight - r.bottom);
+  const dockTop = spaceAbove > spaceBelow;
+  if (dockTop) {
+    const bar = readerEl.querySelector('.reader-bar');
+    toolbar.style.setProperty('--hl-top',
+      `${(bar ? bar.getBoundingClientRect().bottom : 0) + 12}px`);
+  }
+  toolbar.classList.toggle('dock-top', dockTop);
+  toolbar.classList.toggle('dock-bottom', !dockTop);
 }
 function hideToolbar() { toolbar.hidden = true; pendingSel = null; }
 
@@ -430,6 +476,19 @@ export function toast(msg) {
 /* ---------- 事件 ---------- */
 export function initReader() {
   $('#reader-back').addEventListener('click', closeReader);
+
+  // 邊讀邊記位置；離開前景時再補記一次（iOS 殺背景不會給你 unload）
+  let saveTimer = null;
+  contentEl.addEventListener('scroll', () => {
+    if (readerEl.hidden) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => saveProgress(), 300);
+  }, { passive: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && !readerEl.hidden) saveProgress();
+  });
+  // iOS 把 App 收進背景時給的是 pagehide，不見得會走到 unload
+  window.addEventListener('pagehide', () => { if (!readerEl.hidden) saveProgress(); });
   $('#reader-prev').addEventListener('click', () => nav2(-1));
   $('#reader-next').addEventListener('click', () => nav2(1));
 

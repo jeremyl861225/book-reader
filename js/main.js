@@ -7,7 +7,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.3.2';
+const APP_VERSION = 'v2.4.0';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -78,7 +78,7 @@ async function renderShelf() {
       const c = document.createElement('button');
       c.className = 'continue-card';
       c.innerHTML = `繼續閱讀　<b>${esc(sectionLabel(lastSec))}</b>`;
-      c.onclick = () => openReader(lastSec.id, { onClose: renderShelf });
+      c.onclick = () => openReader(lastSec.id, { restore: last, onClose: renderShelf });
       frag.appendChild(c);
     }
   } catch {}
@@ -331,13 +331,8 @@ $('#file-input').addEventListener('change', async (e) => {
 });
 
 /* ----- 書籍管理 ----- */
-$('#btn-new-book').addEventListener('click', async () => {
-  const title = prompt('新書名稱：', '');
-  if (title === null) return;
-  await createBook(title.trim() || '未命名的書');
-  await renderSettings();
-  toast('已新增');
-});
+// 書一律靠匯入產生，不再提供「新增空書」。匯入 PDF 章節時若書架還空著，
+// 由「收進哪一本書」的『＋ 新增一本書…』就地開一本收容，那是匯入流程的一部分。
 
 async function renderBookList() {
   const wrap = $('#book-list');
@@ -646,14 +641,56 @@ async function boot() {
     console.error('figure split failed', err);
   }
   overlay?.remove();
-  renderShelf();
+  await renderShelf();
+
+  // 直接接回上次讀到的位置——按左上角返回才回書架
+  try {
+    const last = JSON.parse(localStorage.getItem('lastRead') || 'null');
+    if (last?.sectionId && await db.getSection(last.sectionId)) {
+      await openReader(last.sectionId, { restore: last, onClose: renderShelf });
+    }
+  } catch {}
 }
 
 applyPrefs();
 initReader();
 boot();
-$('#app-version').textContent = `Book reader ${APP_VERSION}・內容僅儲存於此裝置`;
-
+/* ---------- Service Worker 與更新 ----------
+   加到主畫面的 PWA 最容易卡在舊版：舊的 SW 先把舊快取端出來，
+   新版要等到下下次開啟才輪得到，使用者只會覺得「更新不了」。
+   這裡做三件事：開啟時主動查一次、每次回到前景再查一次、
+   新的 SW 一接管就自動重載，讓更新最多延後幾秒而不是好幾天。 */
+let swReg = null;
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    swReg = reg;
+    reg.update().catch(() => {});
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') reg.update().catch(() => {});
+    });
+  }).catch(() => {});
+
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;   // 首次安裝不必重載；也只重載一次
+    reloading = true;
+    location.reload();
+  });
 }
+
+// 版本號兼作手動更新入口——iOS 偶爾會很久才自己查一次
+const verEl = $('#app-version');
+verEl.textContent = `Book reader ${APP_VERSION}・點這裡檢查更新`;
+verEl.style.cursor = 'pointer';
+verEl.addEventListener('click', async () => {
+  if (!swReg) { location.reload(); return; }
+  toast('檢查更新中…');
+  try {
+    await swReg.update();
+    // 有新版的話 controllerchange 會把頁面重載，走不到下面這行
+    setTimeout(() => toast('已是最新版'), 2500);
+  } catch {
+    toast('檢查失敗，請確認網路');
+  }
+});
