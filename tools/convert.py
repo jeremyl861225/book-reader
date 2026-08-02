@@ -277,7 +277,11 @@ def line_size(line):
 
 def line_text(line):
     t = ''.join(s['text'] for s in line.get('spans', []))
-    return t.replace('\xa0', ' ').replace('​', '').strip()
+    # 軟連字號要在接行「之前」拿掉：留著的話行尾會變成 \xad，
+    # 接行判斷看不到真正的最後一個字元，就會漏掉該補的空白
+    # （「Advances and Training\xad」＋「Considerations」→ TrainingConsiderations）。
+    # 真正斷字的地方排版會另外留一個實體連字號，由 clean() 的規則接回去。
+    return t.replace('\xa0', ' ').replace('​', '').replace('\xad', '').strip()
 
 
 def page_lines(page):
@@ -413,8 +417,27 @@ def region_image(page, rect, max_width, quality, zoom):
 
 # ---------- 版面 → 閱讀順序 ----------
 
+def column_start_y(items):
+    """雙欄版面真正開始的高度＝左右欄第一次同時有內容的地方。
+
+    章首頁的標題是靠右排的（例：CH007 的書名在 x406-576），若一律用
+    左右半頁分欄，標題會被歸進右欄、排到整個左欄後面。這一段以上的東西
+    屬於橫幅（章號、書名、作者、OUTLINE 標頭），要照 y 順序讀。
+    """
+    lefts = [it for it in items if not it['full'] and it['left']]
+    rights = [it for it in items if not it['full'] and not it['left']]
+    best = None
+    for l in lefts:
+        ly0, ly1 = l['bbox'][1], l['bbox'][3]
+        for r in rights:
+            if ly0 < r['bbox'][3] and ly1 > r['bbox'][1]:
+                y = min(ly0, r['bbox'][1])
+                best = y if best is None else min(best, y)
+    return best
+
+
 def order_items(items, page_width):
-    """雙欄閱讀順序：跨欄項目切段，段內先左欄再右欄。"""
+    """雙欄閱讀順序：橫幅照 y、跨欄項目切段，段內先左欄再右欄。"""
     if not items:
         return []
     mid = page_width / 2
@@ -422,6 +445,13 @@ def order_items(items, page_width):
         x0, _, x1, _ = it['bbox']
         it['full'] = (x1 - x0) > page_width * 0.62
         it['left'] = ((x0 + x1) / 2) < mid
+
+    split = column_start_y(items)
+    if split is not None:
+        for it in items:
+            if it['bbox'][3] <= split:      # 整個在雙欄開始之前
+                it['full'] = True
+
     items.sort(key=lambda it: (it['bbox'][1], it['bbox'][0]))
 
     out, left, right = [], [], []
@@ -529,10 +559,23 @@ def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
     flush_text()
     emit_pending()
     doc.close()
-    # 章首的「26 C H A P T E R」裝飾字樣不在頁首帶內，收尾時再拿掉
-    while paras and isinstance(paras[0], str) and CHAPTER_DECOR.match(paras[0]):
-        paras.pop(0)
-    return paras, n_img, n_tab
+    return strip_chapter_decor(paras), n_img, n_tab
+
+
+def strip_chapter_decor(paras):
+    """拿掉章首的裝飾字樣。
+
+    它不在頁首帶內，所以濾不掉；而且排版有時併成一段「26 C H A P T E R」，
+    有時拆成「19」和「C H A P T E R」兩段，兩種都要處理。只在開頭幾段內動手，
+    免得誤刪內文裡的短行。
+    """
+    at = [i for i, p in enumerate(paras[:3]) if isinstance(p, str) and CHAPTER_DECOR.match(p)]
+    if not at:
+        return paras
+    limit = at[-1] + 1
+    return [p for i, p in enumerate(paras)
+            if not (i < limit and isinstance(p, str)
+                    and (CHAPTER_DECOR.match(p) or PAGE_NUM.match(p)))]
 
 
 def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
@@ -543,10 +586,11 @@ def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
     ch, sec, title = parse_filename(pdf.name)
     if chapter is not None:
         ch = chapter
-        # Section 資料夾裡的「00 - …（扉頁）」是該篇的章節總覽，排在該篇最前面
+        # 資料夾裡的「00 - …」排在該篇最前面；其中的「（扉頁）」是該篇章節總覽
         if sec is None and re.match(r'^\s*00\s*[-–]', pdf.stem):
             sec = 0
-            title = '篇章總覽'
+            if '扉頁' in pdf.stem:
+                title = '篇章總覽'
     paras, n_img, n_tab = convert_pdf(pdf, **opts)
     pack = {'app': 'book-reader-pack',
             'sections': [{'chapter': ch, 'chapterTitle': chapter_title,
