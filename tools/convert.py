@@ -89,21 +89,79 @@ def parse_filename(name):
     return ch, sec, title
 
 
-SENT_END = re.compile(r'[。！？…；.!?]["」』)〉》]?$')
+SENT_END = re.compile(r'[。！？…；.!?]["」』)〉》\]]?$')
+
+# 行尾是這些縮寫時，句點不代表句子結束（例：「… ( Figs.」接下一行的圖號）
+ABBR_END = re.compile(
+    r'(?:\b(?:Figs?|Tabs?|Tables?|Eqs?|Refs?|Chaps?|Vols?|Nos?|pp|approx|ca'
+    r'|e\.g|i\.e|et al|vs|cf|Dr|Mr|Mrs|Ms|Prof|Jr|Sr|St|Inc|Ltd'
+    r'|U\.S|Ph\.D|M\.D|B\.C|A\.D)|\b[A-Za-z])\.$', re.I)
+
+# 行尾比右邊界短多少才算「段落最後一行」（相對於區塊寬度）
+SHORT_LINE_RATIO = 0.06
 
 
 def flush(cur, paras):
     t = cur.strip()
     if t:
-        paras.append(t)
+        paras.append(re.sub(r'\s{2,}', ' ', t))
     return ''
 
 
-def block_lines(block):
+def line_text(line):
+    text = ''.join(span['text'] for span in line.get('spans', []))
+    return text.replace('\xa0', ' ').replace('​', '').strip()
+
+
+def block_size(block):
+    """回傳區塊的主要字級（依字元數加權），用來分辨內文／標題／圖說。"""
+    tally = {}
     for line in block.get('lines', []):
-        text = ''.join(span['text'] for span in line.get('spans', []))
-        if text.strip():
-            yield text.strip()
+        for span in line.get('spans', []):
+            n = len(span.get('text', '').strip())
+            if n:
+                tally[round(span['size'], 1)] = tally.get(round(span['size'], 1), 0) + n
+    if not tally:
+        return None
+    return max(tally.items(), key=lambda kv: kv[1])[0]
+
+
+def body_size(doc):
+    """全文最常見的字級＝內文字級。"""
+    tally = {}
+    for page in doc:
+        for block in page.get_text('dict')['blocks']:
+            if block['type'] != 0:
+                continue
+            for line in block.get('lines', []):
+                for span in line.get('spans', []):
+                    n = len(span.get('text', '').strip())
+                    if n:
+                        tally[round(span['size'], 1)] = tally.get(round(span['size'], 1), 0) + n
+    if not tally:
+        return None
+    return max(tally.items(), key=lambda kv: kv[1])[0]
+
+
+def join_line(cur, text):
+    """把一行接到累積字串上；中文不加空白，西文視情況補空白。"""
+    if not cur:
+        return text
+    if re.search(r'[A-Za-z0-9,;:.!?)\]]$', cur) and re.match(r'^[A-Za-z0-9(\[]', text):
+        return cur + ' ' + text
+    if re.search(r'[一-鿿]$', cur) or re.match(r'^[一-鿿]', text):
+        return cur + text
+    return cur + text
+
+
+def ends_paragraph(text, line, left_edge, right_edge):
+    """這一行是不是段落的最後一行：句尾標點 ＋ 行尾明顯短於右邊界。"""
+    if not SENT_END.search(text) or ABBR_END.search(text):
+        return False
+    width = right_edge - left_edge
+    if width <= 0:
+        return True
+    return line['bbox'][2] < right_edge - width * SHORT_LINE_RATIO
 
 
 def image_to_dataurl(raw, max_width, quality):
@@ -130,30 +188,58 @@ def image_to_dataurl(raw, max_width, quality):
 
 def convert_pdf(path, max_width=1200, quality=78):
     doc = fitz.open(path)
+    body = body_size(doc)
     paras = []
-    cur = ''
+    cur = ''          # 尚未收尾的段落（可跨區塊、跨頁接續）
+    pending_img = []  # 段落中途遇到的插圖，等段落收完再放
     n_img = 0
+
+    def emit_pending():
+        nonlocal n_img
+        for url in pending_img:
+            paras.append({'img': url})
+            n_img += 1
+        pending_img.clear()
+
     for page in doc:
-        d = page.get_text('dict')
-        for block in d['blocks']:
+        for block in page.get_text('dict')['blocks']:
             if block['type'] == 0:  # 文字
-                for line in block_lines(block):
-                    if cur and re.search(r'[A-Za-z0-9,;]$', cur) and re.match(r'^[A-Za-z0-9(]', line):
-                        cur += ' '
-                    cur += line
-                    if SENT_END.search(line):
+                lines = [l for l in block.get('lines', []) if line_text(l)]
+                if not lines:
+                    continue
+                size = block_size(block)
+                # 字級和內文不同 → 標題或圖說，自成一段，不與前後文合併
+                if body is not None and size is not None and abs(size - body) > 0.5:
+                    cur = flush(cur, paras)
+                    emit_pending()
+                    head = ''
+                    for line in lines:
+                        head = join_line(head, line_text(line))
+                    flush(head, paras)
+                    continue
+                left = block['bbox'][0]
+                right = max(l['bbox'][2] for l in lines)
+                for line in lines:
+                    text = line_text(line)
+                    cur = join_line(cur, text)
+                    if ends_paragraph(text, line, left, right):
                         cur = flush(cur, paras)
-                cur = flush(cur, paras)  # 區塊結束視為段落界線
+                        emit_pending()
+                # 區塊結尾若句子未完，保留 cur 接到下一個區塊／下一頁
             elif block['type'] == 1:  # 圖片
                 raw = block.get('image')
                 if not raw or len(raw) < MIN_IMG_BYTES:
                     continue
-                cur = flush(cur, paras)
                 url = image_to_dataurl(raw, max_width, quality)
-                if url:
+                if not url:
+                    continue
+                if cur:           # 段落還沒收完 → 先記著，等段落結束再插圖
+                    pending_img.append(url)
+                else:
                     paras.append({'img': url})
                     n_img += 1
     flush(cur, paras)
+    emit_pending()
     doc.close()
     return paras, n_img
 
