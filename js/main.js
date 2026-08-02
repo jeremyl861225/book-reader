@@ -1,13 +1,13 @@
 // 主程式：書架、目錄、搜尋、筆記總覽、設定
 import { db, uid, splitFigures } from './db.js';
-import { importFiles, importPacks, loadSample, resortSections } from './pdf-import.js';
+import { importFiles, importPacks, resortSections } from './pdf-import.js';
 import { initReader, openReader, toast } from './reader.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v2.3.0';
+const APP_VERSION = 'v2.3.1';
 
 // 書籍檔格式：一本書的內容＋螢光筆＋筆記，可自行用 AirDrop／雲端硬碟搬到別台裝置匯入
 const BOOK_FILE = 'book-reader-book';
@@ -45,7 +45,7 @@ async function renderShelf() {
   if (!books.length) {
     body.innerHTML = `
       <div class="empty-state">
-        <p>書架還是空的。<br>到「設定」匯入書籍檔或章節，<br>也可以先載入範例內容試用。</p>
+        <p>書架還是空的。<br>到「設定」匯入書籍檔或章節。</p>
         <button class="btn primary" id="empty-import">前往設定</button>
       </div>`;
     $('#empty-import').onclick = () => switchView('settings');
@@ -328,14 +328,6 @@ $('#file-input').addEventListener('change', async (e) => {
   e.target.value = '';
   await renderBookList();
   if (ok) { toast(`已匯入 ${ok} 個章節`); openBook(bookId); }
-});
-
-$('#btn-sample').addEventListener('click', async () => {
-  const bookId = await resolveTargetBook();
-  if (!bookId) return;
-  await loadSample(bookId);
-  toast('已載入範例內容');
-  openBook(bookId);
 });
 
 /* ----- 書籍管理 ----- */

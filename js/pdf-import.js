@@ -183,26 +183,3 @@ export async function resortSections(bookId) {
     if (list[i].order !== i + 1) { list[i].order = i + 1; await db.putSection(list[i]); }
   }
 }
-
-// 範例內容（試用）
-export async function loadSample(bookId) {
-  const sample = [
-    { chapter: 1, section: 1, title: '什麼是 Book reader', paras: [
-      '這是一段範例內文。你可以長按選取這段文字，試試看畫上螢光筆。選取後會出現顏色工具列，也可以直接加上筆記。',
-      'Book reader 把整本書存在你的手機裡：目錄選章節、全文搜尋、螢光筆與筆記總覽，全部離線可用。',
-      '書的內容只儲存在此裝置的瀏覽器中，不會上傳到任何伺服器。清除瀏覽器資料前，記得先到「設定」匯出備份。' ] },
-    { chapter: 1, section: 2, title: '如何匯入你的書', paras: [
-      '到「設定」分頁，先選好要收進哪一本書，再點「匯入章節」，一次選取多個檔案即可。',
-      '檔名建議包含章節編號，例如「第1章第2節 標題.pdf」或「1-2 標題.pdf」，匯入後會自動歸類排序。',
-      '整本書也可以在「設定 → 書籍管理」匯出成書籍檔，連同螢光筆與筆記傳到另一台裝置。' ] },
-    { chapter: 2, section: 1, title: '搜尋與筆記', paras: [
-      '在「搜尋」分頁輸入關鍵字，可以找到全書所有出現位置，點擊結果直接跳到該段落。',
-      '在「筆記」分頁可以看到所有畫過的螢光筆與筆記，點擊即可回到原文位置。試著搜尋「螢光筆」三個字看看。' ] },
-  ];
-  const existing = await db.sectionsOf(bookId);
-  let order = existing.reduce((m, s) => Math.max(m, s.order), 0);
-  for (const s of sample) {
-    await db.putSection({ id: uid(), bookId, ...s, order: ++order, src: 'sample', addedAt: Date.now() });
-  }
-  await resortSections(bookId);
-}
