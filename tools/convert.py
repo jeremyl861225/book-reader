@@ -148,8 +148,39 @@ def join_line(cur, text):
 
 # ---------- 幾何 ----------
 
-def merge_rects(rects, gap):
-    out = [fitz.Rect(r) for r in rects]
+CELL = 3.0      # 叢集用的網格邊長（pt）
+
+
+def _dilate(mark, W, H, d):
+    """先橫後縱各膨脹 d 格，等效於方形結構元素但快得多。"""
+    if d <= 0:
+        return mark
+    tmp = bytearray(W * H)
+    for y in range(H):
+        base = y * W
+        for x in range(W):
+            if mark[base + x]:
+                lo, hi = max(0, x - d), min(W, x + d + 1)
+                for j in range(lo, hi):
+                    tmp[base + j] = 1
+    out = bytearray(W * H)
+    for x in range(W):
+        for y in range(H):
+            if tmp[y * W + x]:
+                lo, hi = max(0, y - d), min(H, y + d + 1)
+                for yy in range(lo, hi):
+                    out[yy * W + x] = 1
+    return out
+
+
+# 超過這個數量才改用網格法。實測 1500 在本書可讓結果與純精確法完全一致，
+# 又能擋住向量照片那種上萬物件的頁面。
+GRID_THRESHOLD = 1500
+
+
+def _merge_exact(rects, gap):
+    """兩兩比對，結果最精確；O(n³)，只用在物件數不多的頁面。"""
+    out = list(rects)
     changed = True
     while changed:
         changed = False
@@ -163,6 +194,70 @@ def merge_rects(rects, gap):
             if changed:
                 break
     return out
+
+
+def merge_rects(rects, gap):
+    """把相距在 gap 以內的矩形叢集起來。
+
+    絕大多數頁面用兩兩比對（結果最貼合實際邊界）；但這類書偶爾會有
+    以向量畫成的照片級插圖——實測 CH025 有一頁 54584 個繪圖物件，
+    兩兩比對是 O(n³) 永遠跑不完，那種頁面改用網格連通標記，
+    代價是邊界量化到 CELL，可能把鄰近的文字一起圈進去。
+    """
+    rects = [fitz.Rect(r) for r in rects]
+    rects = [r for r in rects if r.is_valid and not r.is_empty]
+    if len(rects) <= 1:
+        return rects
+    if len(rects) <= GRID_THRESHOLD:
+        return _merge_exact(rects, gap)
+
+    ox = min(r.x0 for r in rects)
+    oy = min(r.y0 for r in rects)
+    W = int((max(r.x1 for r in rects) - ox) / CELL) + 1
+    H = int((max(r.y1 for r in rects) - oy) / CELL) + 1
+
+    mark = bytearray(W * H)
+    for r in rects:
+        cy1 = int((r.y1 - oy) / CELL)
+        cx0, cx1 = int((r.x0 - ox) / CELL), int((r.x1 - ox) / CELL)
+        for cy in range(int((r.y0 - oy) / CELL), cy1 + 1):
+            base = cy * W
+            for cx in range(cx0, cx1 + 1):
+                mark[base + cx] = 1
+
+    dil = _dilate(mark, W, H, int(gap / CELL + 0.999))
+
+    # 連通標記（四連通）
+    label = [0] * (W * H)
+    n = 0
+    for start in range(W * H):
+        if not dil[start] or label[start]:
+            continue
+        n += 1
+        stack = [start]
+        label[start] = n
+        while stack:
+            c = stack.pop()
+            cx, cy = c % W, c // W
+            if cx > 0 and dil[c - 1] and not label[c - 1]:
+                label[c - 1] = n; stack.append(c - 1)
+            if cx < W - 1 and dil[c + 1] and not label[c + 1]:
+                label[c + 1] = n; stack.append(c + 1)
+            if cy > 0 and dil[c - W] and not label[c - W]:
+                label[c - W] = n; stack.append(c - W)
+            if cy < H - 1 and dil[c + W] and not label[c + W]:
+                label[c + W] = n; stack.append(c + W)
+
+    # 用原始矩形的精確座標算每一群的外框（不受網格量化影響）
+    groups = {}
+    for r in rects:
+        cx = min(W - 1, int((r.x0 - ox) / CELL))
+        cy = min(H - 1, int((r.y0 - oy) / CELL))
+        g = label[cy * W + cx]
+        if not g:
+            continue
+        groups[g] = (groups[g] | r) if g in groups else fitz.Rect(r)
+    return list(groups.values())
 
 
 def covers(outer, inner, frac=0.6):
