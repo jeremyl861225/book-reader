@@ -1,5 +1,5 @@
 // Service Worker：離線快取
-const VERSION = 'v1.1.0';
+const VERSION = 'v1.2.0';
 const CORE_CACHE = `core-${VERSION}`;
 const RUNTIME_CACHE = 'runtime';
 
@@ -11,6 +11,7 @@ const CORE_ASSETS = [
   'js/db.js',
   'js/reader.js',
   'js/pdf-import.js',
+  'js/sync.js',
   'vendor/pdfjs/pdf.min.mjs',
   'vendor/pdfjs/pdf.worker.min.mjs',
   'manifest.webmanifest',

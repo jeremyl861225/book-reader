@@ -2,12 +2,13 @@
 import { db, uid } from './db.js';
 import { importFiles, importPacks, loadSample, resortSections } from './pdf-import.js';
 import { initReader, openReader, toast } from './reader.js';
+import { syncCfg, saveSyncCfg, syncLibrary } from './sync.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v1.1.0';
+const APP_VERSION = 'v1.2.0';
 
 /* ---------- 分頁切換 ---------- */
 function switchView(name) {
@@ -259,6 +260,37 @@ async function renderManageList() {
   wrap.replaceChildren(frag);
 }
 
+/* ---------- 設定：書庫同步 ---------- */
+function initSyncUI() {
+  const c = syncCfg();
+  $('#sync-repo').value = c.repo || '';
+  $('#sync-token').value = c.token || '';
+  const save = () => {
+    const c2 = syncCfg();
+    c2.repo = $('#sync-repo').value.trim();
+    c2.token = $('#sync-token').value.trim();
+    saveSyncCfg(c2);
+  };
+  $('#sync-repo').addEventListener('change', save);
+  $('#sync-token').addEventListener('change', save);
+  $('#btn-sync').addEventListener('click', async () => {
+    save();
+    const st = $('#sync-status');
+    const btn = $('#btn-sync');
+    btn.disabled = true;
+    try {
+      const r = await syncLibrary((msg) => { st.textContent = msg; });
+      st.textContent = `同步完成：新增/更新 ${r.added} 節，已是最新 ${r.skipped} 包`;
+      if (r.added) { toast(`已同步 ${r.added} 個章節`); switchView('toc'); }
+      else toast('書庫已是最新');
+    } catch (e) {
+      st.textContent = `同步失敗：${e.message || e}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 /* ---------- 設定：偏好 ---------- */
 function applyPrefs() {
   const size = localStorage.getItem('fontSize') || '18';
@@ -324,6 +356,7 @@ $('#btn-wipe').addEventListener('click', async () => {
 
 /* ---------- 啟動 ---------- */
 applyPrefs();
+initSyncUI();
 initReader();
 renderToc();
 $('#app-version').textContent = `隨身書 ${APP_VERSION}・內容僅儲存於此裝置`;

@@ -98,6 +98,7 @@ body {
 .hint.center { text-align: center; }
 .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: 15px; }
 .row input[type="range"] { flex: 1; }
+.row input[type="text"], .row input[type="password"] { flex: 1; min-width: 0; }
 select, input[type="search"], textarea {
   font-size: 16px; padding: 8px 10px; border-radius: 10px;
   border: 1px solid var(--border); background: var(--bg); color: var(--text);

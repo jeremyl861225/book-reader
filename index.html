@@ -69,6 +69,19 @@
       </div>
 
       <div class="card">
+        <h2>書庫同步</h2>
+        <p class="hint">連結你的私有 GitHub 書庫 repo，一鍵同步全部章節（含圖片）。</p>
+        <label class="row">Repo
+          <input type="text" id="sync-repo" placeholder="帳號/repo 名稱" autocapitalize="off" autocorrect="off">
+        </label>
+        <label class="row">Token
+          <input type="password" id="sync-token" placeholder="GitHub fine-grained token">
+        </label>
+        <button id="btn-sync" class="btn primary">🔄 立即同步</button>
+        <div id="sync-status" class="hint"></div>
+      </div>
+
+      <div class="card">
         <h2>閱讀偏好</h2>
         <label class="row">字體大小
           <input type="range" id="font-size" min="14" max="26" step="1">
