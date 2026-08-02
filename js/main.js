@@ -1,13 +1,13 @@
 // 主程式：分頁導覽、目錄、搜尋、筆記總覽、設定
 import { db, uid } from './db.js';
-import { importFiles, loadSample, resortSections } from './pdf-import.js';
+import { importFiles, importPacks, loadSample, resortSections } from './pdf-import.js';
 import { initReader, openReader, toast } from './reader.js';
 
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v1.0.0';
+const APP_VERSION = 'v1.1.0';
 
 /* ---------- 分頁切換 ---------- */
 function switchView(name) {
@@ -107,6 +107,7 @@ $('#search-form').addEventListener('submit', async (e) => {
   const lower = q.toLowerCase();
   for (const s of sections) {
     s.paras.forEach((p, i) => {
+      if (typeof p !== 'string') return;
       let from = 0;
       const pl = p.toLowerCase();
       while (results.length < 300) {
@@ -190,12 +191,22 @@ async function renderNotes() {
 /* ---------- 設定：匯入 ---------- */
 $('#btn-import').addEventListener('click', () => $('#file-input').click());
 $('#file-input').addEventListener('change', async (e) => {
-  const files = e.target.files;
-  if (!files?.length) return;
+  const files = [...(e.target.files || [])];
+  if (!files.length) return;
   const prog = $('#import-progress');
   prog.hidden = false;
-  const { ok, failed } = await importFiles(files, (msg) => { prog.textContent = msg; });
-  prog.textContent = `完成：成功 ${ok} 個` + (failed.length ? `，失敗 ${failed.length} 個：${failed.join('、')}` : '');
+  const pdfs = files.filter(f => /\.pdf$/i.test(f.name));
+  const packs = files.filter(f => /\.json$/i.test(f.name));
+  let ok = 0, failed = [];
+  if (pdfs.length) {
+    const r = await importFiles(pdfs, (msg) => { prog.textContent = msg; });
+    ok += r.ok; failed.push(...r.failed);
+  }
+  if (packs.length) {
+    const r = await importPacks(packs, (msg) => { prog.textContent = msg; });
+    ok += r.ok; failed.push(...r.failed);
+  }
+  prog.textContent = `完成：成功 ${ok} 個章節` + (failed.length ? `，失敗 ${failed.length} 個：${failed.join('、')}` : '');
   e.target.value = '';
   renderManageList();
   if (ok) { toast(`已匯入 ${ok} 個章節`); switchView('toc'); }

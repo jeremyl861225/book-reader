@@ -51,12 +51,29 @@ function saveLastRead() {
 /* ---------- 渲染 ---------- */
 function renderContent() {
   const frag = document.createDocumentFragment();
-  cur.section.paras.forEach((text, i) => {
-    const p = document.createElement('p');
-    p.className = 'para';
-    p.dataset.i = i;
-    renderPara(p, text, i);
-    frag.appendChild(p);
+  cur.section.paras.forEach((item, i) => {
+    if (typeof item === 'string') {
+      const p = document.createElement('p');
+      p.className = 'para';
+      p.dataset.i = i;
+      renderPara(p, item, i);
+      frag.appendChild(p);
+    } else if (item && item.img) {
+      const fig = document.createElement('figure');
+      fig.className = 'fig';
+      fig.dataset.i = i;
+      const img = document.createElement('img');
+      img.src = item.img;
+      img.loading = 'lazy';
+      img.alt = item.caption || '圖片';
+      fig.appendChild(img);
+      if (item.caption) {
+        const fc = document.createElement('figcaption');
+        fc.textContent = item.caption;
+        fig.appendChild(fc);
+      }
+      frag.appendChild(fig);
+    }
   });
   // 章節末的前後導覽
   const nav = document.createElement('div');
@@ -178,6 +195,7 @@ function getSelectionRanges() {
   const pieces = [];
   for (let i = Math.min(i1, i2); i <= Math.max(i1, i2); i++) {
     const text = cur.section.paras[i];
+    if (typeof text !== 'string') continue;
     let s = 0, e = text.length;
     if (i === i1) s = offsetInPara(startP, range.startContainer, range.startOffset);
     if (i === i2) e = offsetInPara(endP, range.endContainer, range.endOffset);

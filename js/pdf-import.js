@@ -131,6 +131,41 @@ export async function importFiles(fileList, onStatus) {
   return { ok, failed };
 }
 
+// 匯入內容包（.json，含文字與圖片的預轉換章節）
+export async function importPacks(files, onStatus) {
+  const existing = await db.allSections();
+  let maxOrder = existing.reduce((m, s) => Math.max(m, s.order), 0);
+  let ok = 0, failed = [];
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    onStatus?.(`(${i + 1}/${files.length}) 讀取內容包：${f.name}`);
+    try {
+      const data = JSON.parse(await f.text());
+      const secs = Array.isArray(data) ? data : data.sections;
+      if (!Array.isArray(secs) || !secs.length) throw new Error('格式不符');
+      for (const s of secs) {
+        if (!Array.isArray(s.paras)) continue;
+        await db.putSection({
+          id: uid(),
+          chapter: s.chapter ?? null,
+          section: s.section ?? null,
+          title: s.title || f.name.replace(/\.json$/i, ''),
+          order: ++maxOrder,
+          paras: s.paras,
+          src: f.name,
+          addedAt: Date.now(),
+        });
+        ok++;
+      }
+    } catch (e) {
+      console.error('pack import failed', f.name, e);
+      failed.push(`${f.name}（${e.message || e}）`);
+    }
+  }
+  await resortSections();
+  return { ok, failed };
+}
+
 // 依「章 → 節 → 加入順序」重新排序
 export async function resortSections() {
   const list = await db.allSections();

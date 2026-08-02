@@ -57,11 +57,12 @@
 
       <div class="card">
         <h2>內容管理</h2>
-        <button id="btn-import" class="btn primary">📥 匯入章節 PDF</button>
-        <input type="file" id="file-input" accept=".pdf,application/pdf" multiple hidden>
-        <p class="hint">可一次選多個檔案。檔名格式建議：<br>
-          「第1章第2節 標題.pdf」或「1-2 標題.pdf」，<br>
-          會自動依章節編號歸類排序。內容只儲存在此裝置，不會上傳。</p>
+        <button id="btn-import" class="btn primary">📥 匯入章節（PDF / 內容包）</button>
+        <input type="file" id="file-input" accept=".pdf,.json,application/pdf,application/json" multiple hidden>
+        <p class="hint">可一次選多個檔案。支援：<br>
+          ① 章節 PDF（就地抽取文字），檔名建議「第1章第2節 標題.pdf」或「1-2 標題.pdf」<br>
+          ② 內容包 .json（預轉換的章節，含圖片）<br>
+          內容只儲存在此裝置，不會上傳。</p>
         <div id="import-progress" class="hint" hidden></div>
         <button id="btn-sample" class="btn">🧪 載入範例內容（試用）</button>
         <div id="manage-list"></div>
