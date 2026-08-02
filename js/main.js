@@ -30,7 +30,8 @@ $('#toc-back').addEventListener('click', () => switchView('shelf'));
 
 /* ---------- 共用文字 ---------- */
 function sectionLabel(s) {
-  if (s.section == null) return s.title;
+  // 第 0 節＝該篇的總覽頁，沒有章號可標
+  if (s.section == null || s.section === 0) return s.title;
   return s.chapterTitle ? `${s.section}. ${s.title}` : `第${s.section}節　${s.title}`;
 }
 function chapterLabelFor(s) {

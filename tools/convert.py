@@ -448,6 +448,10 @@ def convert_one(pdf, out_dir, chapter, chapter_title, opts, skip_existing=True):
     ch, sec, title = parse_filename(pdf.name)
     if chapter is not None:
         ch = chapter
+        # Section 資料夾裡的「00 - …（扉頁）」是該篇的章節總覽，排在該篇最前面
+        if sec is None and re.match(r'^\s*00\s*[-–]', pdf.stem):
+            sec = 0
+            title = '篇章總覽'
     paras, n_img, n_tab = convert_pdf(pdf, **opts)
     pack = {'app': 'book-reader-pack',
             'sections': [{'chapter': ch, 'chapterTitle': chapter_title,
