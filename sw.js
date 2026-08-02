@@ -1,5 +1,5 @@
 // Service Worker：離線快取
-const VERSION = 'v2.1.1';
+const VERSION = 'v2.2.0';
 const CORE_CACHE = `core-${VERSION}`;
 const RUNTIME_CACHE = 'runtime';
 
