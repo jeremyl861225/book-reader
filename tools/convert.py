@@ -323,13 +323,38 @@ def line_size(line):
     return tally.most_common(1)[0][0] if tally else None
 
 
+# PyMuPDF span flags：bit0=上標、bit1=斜體、bit4=粗體
+SUP, ITALIC, BOLD = 1, 2, 16
+CITATION = re.compile(r'^[\d,–—\-\s]+$')
+
+
+def is_citation_span(s):
+    """參考文獻的上標編號：上標旗標＋內容只有數字與逗號。
+
+    這種編號夾在句子中間（「…closed.3 Because…」）會打斷閱讀，
+    而且本書的參考文獻清單另外都在，拿掉不會少資訊。
+    上標的單位符號（cm²、10⁶ 的次方）不是純數字逗號，不會被誤刪。
+    """
+    return bool(s.get('flags', 0) & SUP) and bool(CITATION.match(s.get('text', '')))
+
+
 def line_text(line):
-    t = ''.join(s['text'] for s in line.get('spans', []))
+    t = ''.join(s['text'] for s in line.get('spans', []) if not is_citation_span(s))
     # 軟連字號要在接行「之前」拿掉：留著的話行尾會變成 \xad，
     # 接行判斷看不到真正的最後一個字元，就會漏掉該補的空白
     # （「Advances and Training\xad」＋「Considerations」→ TrainingConsiderations）。
     # 真正斷字的地方排版會另外留一個實體連字號，由 clean() 的規則接回去。
-    return t.replace('\xa0', ' ').replace('​', '').replace('\xad', '').strip()
+    t = t.replace('\xa0', ' ').replace('​', '').replace('\xad', '')
+    return re.sub(r'[ \t]{2,}', ' ', t.replace('\t', ' ')).strip()
+
+
+def line_style(line):
+    """回傳這一行的 (是否整行斜體, 是否整行粗體)，用來認子標與大綱層級。"""
+    spans = [s for s in line.get('spans', []) if s.get('text', '').strip()]
+    if not spans:
+        return False, False
+    return (all(s.get('flags', 0) & ITALIC for s in spans),
+            all((s.get('flags', 0) & BOLD) or 'Bold' in s.get('font', '') for s in spans))
 
 
 def page_lines(page):
@@ -340,7 +365,9 @@ def page_lines(page):
         for line in block.get('lines', []):
             t = line_text(line)
             if t:
-                out.append({'text': t, 'bbox': line['bbox'], 'size': line_size(line)})
+                italic, bold = line_style(line)
+                out.append({'text': t, 'bbox': line['bbox'], 'size': line_size(line),
+                            'italic': italic, 'bold': bold})
     return out
 
 
@@ -534,13 +561,20 @@ def page_items(page, body, running, use_regions):
         regions = [r for r in regions
                    if not (r.width > W * 0.95 and r.height > H * 0.9)]
 
+    outline, consumed = extract_outline(lines, body, W)
+
     items = []
+    if outline:
+        items.append(outline)
     for l in lines:
+        if id(l) in consumed:
+            continue
         if is_running_head(l, H, running):
             continue
         if any(covers(r, l['bbox']) for r in regions):    # 圖內標籤、表格內文
             continue
-        items.append({'kind': 'text', 'bbox': l['bbox'], 'text': l['text'], 'size': l['size']})
+        items.append({'kind': 'text', 'bbox': l['bbox'], 'text': l['text'], 'size': l['size'],
+                      'italic': l.get('italic'), 'bold': l.get('bold')})
     for r in regions:
         items.append({'kind': 'region', 'bbox': tuple(r), 'rect': r,
                       'sub': classify(page, r, lines), 'text': clean(page.get_text(clip=r))})
@@ -548,6 +582,83 @@ def page_items(page, body, running, use_regions):
 
 
 # ---------- 轉檔 ----------
+
+OUTLINE_HEAD = re.compile(r'^O\s*U\s*T\s*L\s*I\s*N\s*E$', re.I)
+NUMBERED = re.compile(r'^\d+[.)]\s')
+
+
+def is_subhead(it, body):
+    """編號子標（「4. Gubaroff valve」）：整行斜體、和內文同字級、短、沒有句尾標點。
+
+    這種子標在 PDF 裡自成一行，但排版沒有和後面的內文分段，
+    直接抽文字會變成「4. Gubaroff valve Gubaroff valves consist of…」黏在一起。
+    """
+    t = it['text']
+    if not it.get('italic') or len(t) > 90 or SENT_END.search(t):
+        return False
+    return body is None or it['size'] is None or abs(it['size'] - body) <= 0.5
+
+
+def extract_outline(lines, body, page_width):
+    """把章前大綱框整塊抓出來，回傳 (大綱項目, 被吃掉的行)。
+
+    必須用「幾何範圍」而不是閱讀順序來框：大綱是橫跨兩欄的，
+    若照串流順序收，左欄一撞到底下的章節標題就結束，右欄那半會整個漏掉。
+    範圍從 O U T L I N E 標頭往下，直到行距出現明顯空隙為止。
+    """
+    head = next((l for l in lines if OUTLINE_HEAD.match(l['text'])), None)
+    if head is None or body is None:
+        return None, set()
+    top = head['bbox'][3]
+    cand = sorted((l for l in lines
+                   if l['bbox'][1] >= top - 2 and l['size'] is not None
+                   and abs(l['size'] - body) <= 0.5),
+                  key=lambda l: (l['bbox'][1], l['bbox'][0]))
+    taken, prev_y = [], top
+    for l in cand:
+        if l['bbox'][1] - prev_y > 25:      # 明顯空隙＝大綱框結束
+            break
+        taken.append(l)
+        prev_y = max(prev_y, l['bbox'][1])
+    if not taken:
+        return None, set()
+    # 判斷範圍要照 y 走（行距空隙才看得出框在哪結束），但排序要先分欄——
+    # 大綱是兩欄並排的，照 y 排會把右欄的項目插進左欄中間。
+    mid = page_width / 2
+    ordered = sorted(taken, key=lambda l: (l['bbox'][0] >= mid, l['bbox'][1], l['bbox'][0]))
+    items = build_outline(ordered, page_width)
+    if not items:
+        return None, set()
+    consumed = {id(l) for l in taken} | {id(head)}
+    x0 = min(l['bbox'][0] for l in taken + [head])
+    x1 = max(l['bbox'][2] for l in taken + [head])
+    y1 = max(l['bbox'][3] for l in taken)
+    return {'kind': 'outline', 'bbox': (x0, head['bbox'][1], x1, y1), 'items': items}, consumed
+
+
+def build_outline(entries, page_width):
+    """把大綱框的行整理成有層級的清單。
+
+    粗體＝大項，一般＝子項；比子項再縮排的是上一項被折行的下半段，接回去。
+    """
+    mid = page_width / 2
+    lvl1_x = {}
+    for e in entries:
+        if not e['bold']:
+            col = e['bbox'][0] < mid
+            lvl1_x[col] = min(lvl1_x.get(col, 1e9), e['bbox'][0])
+    items = []
+    for e in entries:
+        if e['bold']:
+            items.append({'lv': 0, 't': e['text']})
+            continue
+        col = e['bbox'][0] < mid
+        if items and e['bbox'][0] > lvl1_x.get(col, 0) + 6:
+            items[-1]['t'] = join_line(items[-1]['t'], e['text'])   # 折行的下半段
+        else:
+            items.append({'lv': 1, 't': e['text']})
+    return [{'lv': i['lv'], 't': clean(i['t'])} for i in items if clean(i['t'])]
+
 
 def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
     doc = fitz.open(path)
@@ -592,9 +703,22 @@ def convert_pdf(path, max_width=1200, quality=78, zoom=2.0, use_regions=True):
                     emit(obj)
                 continue
 
+            if it['kind'] == 'outline':
+                flush_text()
+                emit_pending()
+                paras.append({'kind': 'outline', 'items': it['items'],
+                              'text': ' '.join(i['t'] for i in it['items'])})
+                continue
+
             size, text = it['size'], it['text']
             off_body = body is not None and size is not None and abs(size - body) > 0.5
             cur_off = body is not None and cur_size is not None and abs(cur_size - body) > 0.5
+            # 編號子標自成一段，不要和後面的內文黏在一起
+            if is_subhead(it, body):
+                flush_text()
+                emit_pending()
+                paras.append(clean(text))
+                continue
             # 字級換檔（內文↔標題／圖說）就切段
             if off_body != cur_off or (off_body and cur_size is not None and abs(size - cur_size) > 0.3):
                 flush_text()
@@ -676,6 +800,10 @@ def main():
             print(f'略過資料夾（無編號）: {sub.name}')
             continue
         for pdf in sorted(sub.glob('*.pdf')):
+            # 篇扉頁只有該篇的章節列表，目錄本身已經看得到，不必收進書裡
+            if '扉頁' in pdf.stem:
+                print(f'略過扉頁: {pdf.name}')
+                continue
             convert_one(pdf, out_dir, ch, ch_title, opts)
 
 

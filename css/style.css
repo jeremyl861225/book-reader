@@ -375,6 +375,32 @@ select:focus, input:focus, textarea:focus { outline: none; border-color: var(--a
   font-size: 1.02em; font-weight: 700; letter-spacing: .01em;
   color: var(--ink); line-height: 1.45; margin: 1.7em 0 .5em;
 }
+/* 編號子標：自成一行、懸掛縮排，和它底下的內文分得開 */
+#reader-content p.subhead {
+  font-weight: 700; color: var(--ink); text-align: left;
+  margin: 1.5em 0 .4em; padding-left: 1.2em; text-indent: -1.2em;
+  line-height: 1.5;
+}
+
+/* 章前大綱：照轉檔判出的層級縮排 */
+#reader-content .outline {
+  margin: 1.6em 0 2em; padding: 14px 16px;
+  background: var(--card2); border: 1px solid var(--line-soft); border-radius: var(--r-md);
+}
+#reader-content .outline-head {
+  font-size: .74em; font-weight: 700; letter-spacing: .14em;
+  color: var(--muted); text-transform: uppercase; margin-bottom: .7em;
+}
+#reader-content .outline-item {
+  font-size: .88em; line-height: 1.55; color: var(--ink2);
+  padding: 2px 0 2px 1em; text-indent: -1em;
+}
+#reader-content .outline-item.lv0 {
+  font-weight: 700; color: var(--ink); margin-top: .55em; padding-left: 0; text-indent: 0;
+}
+#reader-content .outline-item.lv0:first-of-type { margin-top: 0; }
+#reader-content .outline-item.lv1 { padding-left: 1.9em; text-indent: -.9em; }
+
 /* 被排版黏在段落開頭的小標：獨立成一行，不要和內文擠在同一行 */
 #reader-content b.run-head {
   display: block; font-weight: 700; color: var(--accent-ink);

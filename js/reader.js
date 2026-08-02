@@ -167,10 +167,15 @@ function inlineHeadEnd(text) {
   return end;
 }
 
+// 編號子標（「4. Gubaroff valve」）：原書排成斜體單行，轉檔已經讓它自成一段
+const NUMBERED_SUB = /^\d+[.)]\s+\S/;
+const isSubhead = (t) => NUMBERED_SUB.test(t) && t.length <= 90 && !ENDS_SENTENCE.test(t);
+
 function paraClass(text, i) {
   if (i === 0) return 'para title';
   if (i === 1 && isByline(text)) return 'para byline';
   if (CAPTION_RE.test(text)) return 'para caption';
+  if (isSubhead(text)) return 'para subhead';
   if (isHeading(text)) return 'para heading' + (isAllCaps(text) ? ' h1' : ' h2');
   return 'para';
 }
@@ -184,6 +189,22 @@ function renderContent() {
       p.dataset.i = i;
       renderPara(p, item, i);
       frag.appendChild(p);
+    } else if (item && item.kind === 'outline') {
+      // 章前大綱：轉檔時已經分好層級，這裡照層級縮排成清單
+      const box = document.createElement('nav');
+      box.className = 'outline';
+      box.dataset.i = i;
+      const h = document.createElement('div');
+      h.className = 'outline-head';
+      h.textContent = '本章大綱';
+      box.appendChild(h);
+      for (const o of item.items || []) {
+        const li = document.createElement('div');
+        li.className = 'outline-item lv' + (o.lv || 0);
+        li.textContent = o.t;
+        box.appendChild(li);
+      }
+      frag.appendChild(box);
     } else if (item && (item.figId || item.img)) {
       const src = item.img || cur.figs.get(item.figId);
       if (!src) return;
