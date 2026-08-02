@@ -148,6 +148,7 @@ export async function importPacks(files, onStatus) {
         await db.putSection({
           id: uid(),
           chapter: s.chapter ?? null,
+          chapterTitle: s.chapterTitle ?? null,
           section: s.section ?? null,
           title: s.title || f.name.replace(/\.json$/i, ''),
           order: ++maxOrder,

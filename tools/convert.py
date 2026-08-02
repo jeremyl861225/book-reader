@@ -2,10 +2,16 @@
 """把章節 PDF 轉成隨身書內容包（.json，含文字段落與圖片）。
 
 用法：
-    python3 convert.py <PDF資料夾或單一PDF> <輸出資料夾> [--max-width 1200] [--quality 78]
+    python3 convert.py <輸入> <輸出資料夾> [--max-width=1200] [--quality=78]
 
-每個 PDF 產生一個同名 .json 內容包，可直接在 app 的「匯入章節」選取。
-檔名解析規則與 app 相同：「第1章第2節 標題.pdf」或「1-2 標題.pdf」。
+<輸入> 可以是：
+- 整本書的根資料夾（含「01 - SECTION I - ...」等 Section 子資料夾）
+  → Section 資料夾編號成為「章」，資料夾名稱成為章標題；
+    其中的「CHnnn - 標題.pdf」nnn 成為「節」編號
+- 單一 Section 資料夾或單一 PDF
+
+也支援「第1章第2節 標題.pdf」「1-2 標題.pdf」等中文命名。
+每個 PDF 產生一個同名 .json 內容包，可用 app 的「匯入章節」或「書庫同步」載入。
 """
 import base64
 import json
@@ -38,8 +44,28 @@ def cn_to_int(s):
     return n + cur
 
 
+def parse_section_dir(name):
+    """「01 - SECTION I - Perioperative Care」→ (1, 'SECTION I - Perioperative Care')"""
+    m = re.match(r'^\s*(\d+)\s*[-–]\s*(.+)$', name)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return None, name.strip()
+
+
 def parse_filename(name):
+    """回傳 (chapter, section, title)。chapter 通常由資料夾決定，這裡處理檔名。"""
     base = re.sub(r'\.pdf$', '', name, flags=re.I).strip()
+
+    # CHnnn - 標題（本書格式）→ section = nnn
+    m = re.match(r'^CH\s*(\d+)\s*[-–]\s*(.+)$', base, flags=re.I)
+    if m:
+        return None, int(m.group(1)), m.group(2).strip()
+
+    # 「00 - Front Matter」「99 - Index」等根目錄檔案
+    m = re.match(r'^\s*(\d+)\s*[-–]\s*(.+)$', base)
+    if m and int(m.group(1)) in (0, 99):
+        return int(m.group(1)), None, m.group(2).strip()
+
     ch = sec = None
     m = re.search(r'第\s*([0-9一二兩三四五六七八九十]+)\s*章', base)
     if m:
@@ -59,7 +85,7 @@ def parse_filename(name):
             if m:
                 ch = int(m.group(1))
                 base = base[m.end():]
-    title = re.sub(r'^[\s\-_、.．]+|[\s\-_、.．]+$', '', base) or re.sub(r'\.pdf$', '', name, flags=re.I)
+    title = re.sub(r'^[\s\-–_、.．]+|[\s\-–_、.．]+$', '', base) or re.sub(r'\.pdf$', '', name, flags=re.I)
     return ch, sec, title
 
 
@@ -80,10 +106,10 @@ def block_lines(block):
             yield text.strip()
 
 
-def image_to_dataurl(doc, xref, raw, max_width, quality):
-    """回傳 (dataurl, w, h)；太小的圖回傳 None。"""
+def image_to_dataurl(raw, max_width, quality):
+    """回傳 dataurl；太小的圖回傳 None。"""
     try:
-        pix = fitz.Pixmap(doc, xref) if xref else fitz.Pixmap(raw)
+        pix = fitz.Pixmap(raw)
     except Exception:
         return None
     if pix.width < MIN_IMG_PX or pix.height < MIN_IMG_PX:
@@ -96,10 +122,10 @@ def image_to_dataurl(doc, xref, raw, max_width, quality):
         pix.shrink(1)
     try:
         data = pix.tobytes('jpg', jpg_quality=quality)
+        return 'data:image/jpeg;base64,' + base64.b64encode(data).decode()
     except Exception:
         data = pix.tobytes('png')
-        return ('data:image/png;base64,' + base64.b64encode(data).decode(), pix.width, pix.height)
-    return ('data:image/jpeg;base64,' + base64.b64encode(data).decode(), pix.width, pix.height)
+        return 'data:image/png;base64,' + base64.b64encode(data).decode()
 
 
 def convert_pdf(path, max_width=1200, quality=78):
@@ -117,20 +143,36 @@ def convert_pdf(path, max_width=1200, quality=78):
                     cur += line
                     if SENT_END.search(line):
                         cur = flush(cur, paras)
-                # 區塊結束視為潛在段落界線
-                cur = flush(cur, paras)
+                cur = flush(cur, paras)  # 區塊結束視為段落界線
             elif block['type'] == 1:  # 圖片
                 raw = block.get('image')
                 if not raw or len(raw) < MIN_IMG_BYTES:
                     continue
                 cur = flush(cur, paras)
-                result = image_to_dataurl(doc, 0, raw, max_width, quality)
-                if result:
-                    paras.append({'img': result[0]})
+                url = image_to_dataurl(raw, max_width, quality)
+                if url:
+                    paras.append({'img': url})
                     n_img += 1
     flush(cur, paras)
     doc.close()
     return paras, n_img
+
+
+def convert_one(pdf, out_dir, chapter, chapter_title, max_width, quality, skip_existing=True):
+    out = out_dir / (pdf.stem + '.json')
+    if skip_existing and out.exists():
+        print(f'skip（已存在）: {out.name}')
+        return
+    ch, sec, title = parse_filename(pdf.name)
+    if chapter is not None:
+        ch = chapter
+    paras, n_img = convert_pdf(pdf, max_width, quality)
+    pack = {'app': 'book-reader-pack',
+            'sections': [{'chapter': ch, 'chapterTitle': chapter_title,
+                          'section': sec, 'title': title, 'paras': paras}]}
+    out.write_text(json.dumps(pack, ensure_ascii=False), encoding='utf-8')
+    n_text = sum(1 for p in paras if isinstance(p, str))
+    print(f'{pdf.name} -> {out.name}  章={ch} 節={sec}  段落={n_text} 圖={n_img}  {out.stat().st_size/1024:.0f}KB')
 
 
 def main():
@@ -144,16 +186,22 @@ def main():
     quality = int(opts.get('quality', 78))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pdfs = sorted(src.glob('*.pdf')) if src.is_dir() else [src]
-    for pdf in pdfs:
-        ch, sec, title = parse_filename(pdf.name)
-        paras, n_img = convert_pdf(pdf, max_width, quality)
-        pack = {'app': 'book-reader-pack',
-                'sections': [{'chapter': ch, 'section': sec, 'title': title, 'paras': paras}]}
-        out = out_dir / (pdf.stem + '.json')
-        out.write_text(json.dumps(pack, ensure_ascii=False), encoding='utf-8')
-        n_text = sum(1 for p in paras if isinstance(p, str))
-        print(f'{pdf.name} -> {out.name}  章={ch} 節={sec} 標題={title}  段落={n_text} 圖={n_img}  {out.stat().st_size/1024:.0f}KB')
+    if src.is_file():
+        convert_one(src, out_dir, None, None, max_width, quality, skip_existing=False)
+        return
+
+    # 資料夾：根目錄 PDF ＋ Section 子資料夾
+    for pdf in sorted(src.glob('*.pdf')):
+        ch, _, _ = parse_filename(pdf.name)
+        title_map = {0: '前言', 99: '附錄與索引'}
+        convert_one(pdf, out_dir, ch, title_map.get(ch), max_width, quality)
+    for sub in sorted(p for p in src.iterdir() if p.is_dir()):
+        ch, ch_title = parse_section_dir(sub.name)
+        if ch is None:
+            print(f'略過資料夾（無編號）: {sub.name}')
+            continue
+        for pdf in sorted(sub.glob('*.pdf')):
+            convert_one(pdf, out_dir, ch, ch_title, max_width, quality)
 
 
 if __name__ == '__main__':

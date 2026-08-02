@@ -8,7 +8,7 @@ const $ = (s) => document.querySelector(s);
 const $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.3.0';
 
 /* ---------- 分頁切換 ---------- */
 function switchView(name) {
@@ -24,10 +24,15 @@ $$('#tabbar button').forEach(b => b.addEventListener('click', () => switchView(b
 const openChapters = new Set(JSON.parse(localStorage.getItem('openChapters') || '[]'));
 
 function sectionLabel(s) {
-  return (s.section != null ? `第${s.section}節　` : '') + s.title;
+  if (s.section == null) return s.title;
+  // 有英文章標題（如 SECTION I）時用「135. 標題」，否則用「第135節」
+  return s.chapterTitle ? `${s.section}. ${s.title}` : `第${s.section}節　${s.title}`;
 }
 function chapterLabel(key) {
   return key === 'null' ? '未分章' : `第${key}章`;
+}
+function chapterLabelFor(s) {
+  return s.chapterTitle || chapterLabel(String(s.chapter));
 }
 
 async function renderToc() {
@@ -74,7 +79,7 @@ async function renderToc() {
     block.className = 'chapter-block' + (openChapters.has(key) || byChapter.size === 1 ? ' open' : '');
     const head = document.createElement('button');
     head.className = 'chapter-head';
-    head.innerHTML = `<span>${esc(chapterLabel(key))}</span><span class="chev">›</span>`;
+    head.innerHTML = `<span>${esc(chapterLabelFor(secs[0]))}</span><span class="chev">›</span>`;
     head.onclick = () => {
       block.classList.toggle('open');
       block.classList.contains('open') ? openChapters.add(key) : openChapters.delete(key);
@@ -137,7 +142,7 @@ $('#search-form').addEventListener('submit', async (e) => {
       esc(text.slice(r.at + q.length, e2)) + (e2 < text.length ? '…' : '');
     const btn = document.createElement('button');
     btn.className = 'result-item';
-    btn.innerHTML = `<div class="loc">${esc(chapterLabel(String(r.section.chapter)))}・${esc(sectionLabel(r.section))}</div>${snippet}`;
+    btn.innerHTML = `<div class="loc">${esc(chapterLabelFor(r.section))}・${esc(sectionLabel(r.section))}</div>${snippet}`;
     btn.onclick = () => openReader(r.section.id, { scrollToPara: r.paraIdx });
     frag.appendChild(btn);
   }
@@ -180,7 +185,7 @@ async function renderNotes() {
     const btn = document.createElement('button');
     btn.className = 'result-item';
     btn.innerHTML =
-      `<div class="loc">${esc(chapterLabel(String(sec.chapter)))}・${esc(sectionLabel(sec))}</div>` +
+      `<div class="loc">${esc(chapterLabelFor(sec))}・${esc(sectionLabel(sec))}</div>` +
       `<div class="note-quote" style="border-color:${colorVar[g.color] || colorVar.yellow};background:${colorVar[g.color] || colorVar.yellow}22">${esc(g.quote)}</div>` +
       (g.note ? `<div class="note-text">${esc(g.note)}</div>` : '');
     btn.onclick = () => openReader(g.sectionId, { scrollToHl: g.id, onClose: renderNotes });
@@ -233,7 +238,7 @@ async function renderManageList() {
     const row = document.createElement('div');
     row.className = 'manage-item';
     row.innerHTML =
-      `<span class="t">${esc(chapterLabel(String(s.chapter)))}・${esc(sectionLabel(s))}</span>` +
+      `<span class="t">${esc(chapterLabelFor(s))}・${esc(sectionLabel(s))}</span>` +
       `<button data-act="edit">✏️</button><button data-act="del">🗑</button>`;
     row.querySelector('[data-act="edit"]').onclick = async () => {
       const title = prompt('節標題：', s.title);

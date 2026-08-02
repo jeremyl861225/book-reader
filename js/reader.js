@@ -24,9 +24,11 @@ export async function openReader(sectionId, opts = {}) {
   cur.highlights = await db.highlightsFor(sectionId);
   onCloseCb = opts.onClose || null;
 
-  $('#reader-chapter').textContent = section.chapter != null ? `第${section.chapter}章` : '';
-  $('#reader-section').textContent =
-    (section.section != null ? `第${section.section}節　` : '') + section.title;
+  $('#reader-chapter').textContent =
+    section.chapterTitle || (section.chapter != null ? `第${section.chapter}章` : '');
+  $('#reader-section').textContent = section.section == null ? section.title
+    : section.chapterTitle ? `${section.section}. ${section.title}`
+    : `第${section.section}節　${section.title}`;
 
   renderContent();
   readerEl.hidden = false;

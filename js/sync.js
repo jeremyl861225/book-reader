@@ -67,6 +67,7 @@ export async function syncLibrary(onStatus) {
       const rec = {
         id: uid(),
         chapter: s.chapter ?? null,
+        chapterTitle: s.chapterTitle ?? null,
         section: s.section ?? null,
         title: s.title || p.path.split('/').pop().replace(/\.json$/i, ''),
         order: ++maxOrder,
